@@ -1,10 +1,11 @@
-// Field Route Navigator v13
+// Field Route Navigator v14
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
-const DONE_DIST_M = 22;
-const ARROW_LOOKAHEAD_M = 160;
+const VISITED_BUFFER_M = 8;      // GPS lệch <= 8m vẫn tính là đã đi
+const SEGMENT_MAX_M = 25;        // chia line dài thành đoạn nhỏ để tô xanh sớm
+const GUIDE_LOOKAHEAD_M = 300;   // chỉ dẫn trước 300m
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v13-state";
+const STORAGE_KEY = "field-route-v14-state";
 const FOLLOW_ZOOM = 16;
 const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
 let hasInitialGpsFix = false;
@@ -26,6 +27,7 @@ const fileInput = document.getElementById("fileInput");
 fileInput.onchange = async e => { const f = e.target.files[0]; if (f) await loadFile(f); };
 document.getElementById("resetBtn").onclick = () => { localStorage.removeItem(STORAGE_KEY); edgeStatus.clear(); planCursor = 0; if (graph && currentPos) rebuildFromGps(); drawAll(); };
 document.getElementById("skipBtn").onclick = () => skipCurrentEdge();
+document.getElementById("skip300Btn").onclick = () => skipAhead(300);
 document.getElementById("exportBtn").onclick = () => exportGPX();
 
 init();
@@ -35,7 +37,7 @@ async function init(){
 }
 
 async function loadDefaultKMZ(){
-  const res = await fetch("Route.kmz?v=13");
+  const res = await fetch("Route.kmz?v=14");
   const blob = await res.blob();
   await loadFile(blob);
 }
@@ -132,12 +134,22 @@ function buildGraphFromLines(){
   const nodes = new Map(), adj = new Map(), edges = new Map();
   function addNode(p){ const k=keyOf(p); if(!nodes.has(k)) nodes.set(k,{key:k,p}); if(!adj.has(k)) adj.set(k,[]); return k; }
   function addEdgeByPoint(pa,pb){
-    const a=addNode(pa), b=addNode(pb); if (a===b) return;
-    const k=ekey(a,b); if (edges.has(k)) return;
-    const len=dist(pa,pb); if (len < 0.05) return;
-    const edge={key:k,a,b,len,geom:[nodes.get(a).p,nodes.get(b).p]}; edges.set(k,edge);
-    adj.get(a).push({to:b,key:k,w:len}); adj.get(b).push({to:a,key:k,w:len});
-    if(!edgeStatus.has(k)) edgeStatus.set(k,"unvisited");
+    const total = dist(pa,pb);
+    if (total < 0.05) return;
+    const parts = Math.max(1, Math.ceil(total / SEGMENT_MAX_M));
+    let prev = pa;
+    for (let i=1; i<=parts; i++) {
+      const t = i / parts;
+      const cur = [pa[0] + (pb[0]-pa[0])*t, pa[1] + (pb[1]-pa[1])*t];
+      const a=addNode(prev), b=addNode(cur); if (a===b) { prev = cur; continue; }
+      const k=ekey(a,b); if (!edges.has(k)) {
+        const len=dist(prev,cur);
+        const edge={key:k,a,b,len,geom:[nodes.get(a).p,nodes.get(b).p]}; edges.set(k,edge);
+        adj.get(a).push({to:b,key:k,w:len}); adj.get(b).push({to:a,key:k,w:len});
+        if(!edgeStatus.has(k)) edgeStatus.set(k,"unvisited");
+      }
+      prev = cur;
+    }
   }
 
   for (const s of segments) {
@@ -337,20 +349,48 @@ function eulerTrail(start, edgeList){
 }
 
 function updateProgress(){
-  if(!planned.length) return;
-  const step=planned[planCursor]; if(!step) return;
-  const a=graph.nodes.get(step.a).p, b=graph.nodes.get(step.b).p;
-  const pr=projectPointToSegment(currentPos,a,b);
-  if(pr.d < DONE_DIST_M && pr.t > 0.82){
-    edgeStatus.set(step.key,"done"); planCursor++;
-    while(planned[planCursor] && edgeStatus.get(planned[planCursor].key)!=="unvisited") planCursor++;
-    if(planCursor>=planned.length) rebuildFromGps();
-    saveState();
+  if(!planned.length || !currentPos) return;
+
+  // v14: Không chờ đi hết cả line dài. Route đã được chia nhỏ 20-25m.
+  // Nếu GPS nằm trong corridor VISITED_BUFFER_M quanh tuyến đã plan, các segment phía sau sẽ xanh sớm.
+  let best = null;
+  const maxCheck = Math.min(planned.length, planCursor + 80);
+  for (let i=planCursor; i<maxCheck; i++) {
+    const st = planned[i];
+    if (!st || edgeStatus.get(st.key) !== "unvisited") continue;
+    const a=graph.nodes.get(st.a).p, b=graph.nodes.get(st.b).p;
+    const pr=projectPointToSegment(currentPos,a,b);
+    if (pr.d <= VISITED_BUFFER_M && (!best || pr.d < best.d)) best = {i, pr};
   }
+  if (!best) return;
+
+  for (let i=planCursor; i<best.i; i++) {
+    if (planned[i] && edgeStatus.get(planned[i].key)==="unvisited") edgeStatus.set(planned[i].key,"done");
+  }
+  if (best.pr.t > 0.55 && planned[best.i]) edgeStatus.set(planned[best.i].key,"done");
+
+  while(planned[planCursor] && edgeStatus.get(planned[planCursor].key)!=="unvisited") planCursor++;
+  if(planCursor>=planned.length) rebuildFromGps();
+  saveState();
 }
 function skipCurrentEdge(){
   const step=planned[planCursor]; if(!step) return;
   edgeStatus.set(step.key,"skipped");
+  rebuildFromGps(); drawAll(); saveState();
+}
+function skipAhead(meters){
+  if(!planned.length) return;
+  let sum = 0, i = planCursor, skipped = 0;
+  while (i < planned.length && sum < meters) {
+    const st = planned[i];
+    if (st && edgeStatus.get(st.key)==="unvisited") {
+      const e = graph.edges.get(st.key);
+      if (e) sum += e.len;
+      edgeStatus.set(st.key,"skipped");
+      skipped++;
+    }
+    i++;
+  }
   rebuildFromGps(); drawAll(); saveState();
 }
 
@@ -364,19 +404,30 @@ function drawAll(fit=false){
     else if(st==="skipped") L.polyline(geom,{color:"#ff8c00",weight:7,opacity:.95}).addTo(layers.skipped);
     else L.polyline(geom,{color:"#b9c0c9",weight:5,opacity:.55}).addTo(layers.base);
   }
-  const step=planned[planCursor];
-  if(step){
-    const a=graph.nodes.get(step.a).p, b=graph.nodes.get(step.b).p;
-    L.polyline([a,b],{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
-    drawArrowsOnSegment(a,b);
-  }
+  drawActiveLookahead();
   if(fit && bounds.length) map.fitBounds(bounds,{padding:[30,30]});
 }
+function drawActiveLookahead(){
+  if(!planned.length) return;
+  let remain = GUIDE_LOOKAHEAD_M;
+  for(let i=planCursor; i<planned.length && remain>0; i++){
+    const st = planned[i];
+    if(!st || edgeStatus.get(st.key)!=="unvisited") continue;
+    const a=graph.nodes.get(st.a).p, b=graph.nodes.get(st.b).p;
+    const len=dist(a,b);
+    const use = Math.min(len, remain);
+    const end = use >= len ? b : [a[0]+(b[0]-a[0])*(use/len), a[1]+(b[1]-a[1])*(use/len)];
+    L.polyline([a,end],{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
+    drawArrowsOnSegment(a,end);
+    remain -= use;
+  }
+}
 function drawArrowsOnSegment(a,b){
-  const len=dist(a,b), n=Math.max(1, Math.floor(Math.min(len, ARROW_LOOKAHEAD_M)/38));
+  const len=dist(a,b); if(len < 3) return;
+  const n=Math.max(1, Math.floor(len/45));
   const br=bearing(a,b);
   for(let i=1;i<=n;i++){
-    const t=(i/(n+1))*Math.min(1,ARROW_LOOKAHEAD_M/len);
+    const t=i/(n+1);
     const p=[a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t];
     const icon=L.divIcon({className:"", html:`<div class="nav-arrow" style="transform:rotate(${br}deg)"></div>`, iconSize:[22,28], iconAnchor:[11,17]});
     L.marker(p,{icon,interactive:false}).addTo(layers.arrows);
@@ -391,6 +442,6 @@ function restoreState(){
 function exportGPX(){
   const done=[...graph.edges.values()].filter(e=>edgeStatus.get(e.key)==="done");
   let trk=""; done.forEach(e=>e.geom.forEach(p=>trk+=`<trkpt lat="${p[0]}" lon="${p[1]}"></trkpt>\n`));
-  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v13"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
+  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v14"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([gpx],{type:"application/gpx+xml"})); a.download="completed-route.gpx"; a.click(); URL.revokeObjectURL(a.href);
 }

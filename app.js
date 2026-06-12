@@ -1,11 +1,12 @@
-// Field Route Navigator v12
+// Field Route Navigator v13
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
 const DONE_DIST_M = 22;
 const ARROW_LOOKAHEAD_M = 160;
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v12-state";
+const STORAGE_KEY = "field-route-v13-state";
 const FOLLOW_ZOOM = 16;
+const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
 let hasInitialGpsFix = false;
 
 let map = L.map("map", { zoomControl: false }).setView([10.8, 106.7], 17);
@@ -34,7 +35,7 @@ async function init(){
 }
 
 async function loadDefaultKMZ(){
-  const res = await fetch("Route.kmz?v=12");
+  const res = await fetch("Route.kmz?v=13");
   const blob = await res.blob();
   await loadFile(blob);
 }
@@ -83,22 +84,98 @@ function bearing(a,b){
 function ekey(a,b){ return [a,b].sort().join("|"); }
 
 function buildGraphFromLines(){
+  // v13: tạo graph bằng cách tự phát hiện giao cắt thật + snap sai số nhỏ.
+  // Nếu một line AB liền mạch bị line khác cắt tại D nhưng trong KMZ không có điểm D,
+  // app sẽ tự chèn D và tách AB thành A-D + D-B trước khi tối ưu tuyến.
+  const segments = [];
+  rawLines.forEach((line, li) => {
+    for (let i=0; i<line.length-1; i++) {
+      if (dist(line[i], line[i+1]) > 0.05) segments.push({ id: segments.length, line: li, idx: i, a: line[i], b: line[i+1], splits: [] });
+    }
+  });
+  segments.forEach(s => {
+    s.splits.push({t:0, p:s.a});
+    s.splits.push({t:1, p:s.b});
+  });
+
+  // 1) Giao cắt hình học thật sự: xử lý đúng cả góc vuông, góc nhọn, góc tù.
+  for (let i=0; i<segments.length; i++) {
+    for (let j=i+1; j<segments.length; j++) {
+      const s1=segments[i], s2=segments[j];
+      if (s1.line === s2.line && Math.abs(s1.idx-s2.idx)<=1) continue;
+      const hit = segmentIntersection(s1.a, s1.b, s2.a, s2.b);
+      if (hit) {
+        s1.splits.push({t:hit.t, p:hit.p});
+        s2.splits.push({t:hit.u, p:hit.p});
+      }
+    }
+  }
+
+  // 2) Snap sai số nhỏ: nếu đầu/cuối line lệch khỏi line khác <= 3m thì tự kéo vào điểm gần nhất.
+  for (const s of segments) {
+    [{t:0,p:s.a},{t:1,p:s.b}].forEach(ep => {
+      let best=null;
+      for (const other of segments) {
+        if (other.id === s.id) continue;
+        if (other.line === s.line && Math.abs(other.idx-s.idx)<=1) continue;
+        const pr = projectPointToSegment(ep.p, other.a, other.b);
+        if (pr.t <= 0.00001 || pr.t >= 0.99999) continue;
+        if (!best || pr.d < best.d) best = {seg: other, ...pr};
+      }
+      if (best && best.d <= SNAP_TOL_M) {
+        s.splits.push({t:ep.t, p:best.point});      // đầu/cuối line nhánh được nối vào D
+        best.seg.splits.push({t:best.t, p:best.point}); // line chính bị tách tại D
+      }
+    });
+  }
+
   const nodes = new Map(), adj = new Map(), edges = new Map();
   function addNode(p){ const k=keyOf(p); if(!nodes.has(k)) nodes.set(k,{key:k,p}); if(!adj.has(k)) adj.set(k,[]); return k; }
-  function addEdge(a,b){
-    if (a===b) return;
+  function addEdgeByPoint(pa,pb){
+    const a=addNode(pa), b=addNode(pb); if (a===b) return;
     const k=ekey(a,b); if (edges.has(k)) return;
-    const ea=nodes.get(a).p, eb=nodes.get(b).p, len=dist(ea,eb);
-    const edge={key:k,a,b,len,geom:[ea,eb]}; edges.set(k,edge);
+    const len=dist(pa,pb); if (len < 0.05) return;
+    const edge={key:k,a,b,len,geom:[nodes.get(a).p,nodes.get(b).p]}; edges.set(k,edge);
     adj.get(a).push({to:b,key:k,w:len}); adj.get(b).push({to:a,key:k,w:len});
     if(!edgeStatus.has(k)) edgeStatus.set(k,"unvisited");
   }
-  rawLines.forEach(line => {
-    for(let i=0;i<line.length;i++) addNode(line[i]);
-    for(let i=0;i<line.length-1;i++) addEdge(keyOf(line[i]), keyOf(line[i+1]));
-  });
+
+  for (const s of segments) {
+    const pts = cleanSplits(s.splits);
+    for (let i=0; i<pts.length-1; i++) addEdgeByPoint(pts[i].p, pts[i+1].p);
+  }
   graph = {nodes, adj, edges};
 }
+
+function cleanSplits(splits){
+  splits.sort((a,b)=>a.t-b.t);
+  const out=[];
+  for (const x of splits) {
+    const last=out[out.length-1];
+    if (!last || Math.abs(x.t-last.t)>1e-7 || dist(x.p,last.p)>0.15) out.push(x);
+    else last.p = [(last.p[0]+x.p[0])/2, (last.p[1]+x.p[1])/2];
+  }
+  return out;
+}
+
+function segmentIntersection(a,b,c,d){
+  // Tính giao điểm 2 đoạn bằng hệ tọa độ phẳng cục bộ quanh a.
+  const R=6371000, lat0=a[0]*Math.PI/180;
+  function xy(q){ return [R*(q[1]-a[1])*Math.PI/180*Math.cos(lat0), R*(q[0]-a[0])*Math.PI/180]; }
+  function ll(xy){ return [a[0]+xy[1]/R*180/Math.PI, a[1]+xy[0]/(R*Math.cos(lat0))*180/Math.PI]; }
+  const A=xy(a), B=xy(b), C=xy(c), D=xy(d);
+  const r=[B[0]-A[0], B[1]-A[1]], s=[D[0]-C[0], D[1]-C[1]];
+  const den = cross(r,s);
+  if (Math.abs(den) < 1e-9) return null; // song song/trùng nhau: không tạo giao cắt ảo
+  const qp=[C[0]-A[0], C[1]-A[1]];
+  const t = cross(qp,s)/den, u = cross(qp,r)/den;
+  if (t >= -1e-9 && t <= 1+1e-9 && u >= -1e-9 && u <= 1+1e-9) {
+    const p = ll([A[0]+t*r[0], A[1]+t*r[1]]);
+    return {t:Math.max(0,Math.min(1,t)), u:Math.max(0,Math.min(1,u)), p};
+  }
+  return null;
+}
+function cross(a,b){ return a[0]*b[1]-a[1]*b[0]; }
 
 function startGPS(){
   if (!navigator.geolocation) return alert("Thiết bị không hỗ trợ GPS");
@@ -314,6 +391,6 @@ function restoreState(){
 function exportGPX(){
   const done=[...graph.edges.values()].filter(e=>edgeStatus.get(e.key)==="done");
   let trk=""; done.forEach(e=>e.geom.forEach(p=>trk+=`<trkpt lat="${p[0]}" lon="${p[1]}"></trkpt>\n`));
-  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v11"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
+  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v13"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([gpx],{type:"application/gpx+xml"})); a.download="completed-route.gpx"; a.click(); URL.revokeObjectURL(a.href);
 }

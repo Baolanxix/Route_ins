@@ -1,12 +1,13 @@
-# Field Route Navigator v12
+# Field Route Navigator v13
 
-- Bản đồ vệ tinh.
-- Chọn/import KMZ hoặc KML khác.
-- GPS bắt đầu tại điểm gần nhất trên chính đoạn route.
-- Tính hành trình tối ưu kiểu Chinese Postman để đi qua tất cả đoạn trong KMZ với tổng đường lặp ít nhất có thể.
-- Chỉ đi trên các đoạn có trong KMZ, không tự vẽ đường ngoài.
-- Vàng: đoạn đang dẫn. Xanh: đoạn đã đi. Cam: đoạn bỏ qua. Xám: chưa đi.
-- Nút Bỏ qua đoạn sẽ tính lại đường tối ưu cho các đoạn còn lại.
-- Tự lưu trạng thái bằng localStorage.
-- Có xuất GPX các đoạn đã đi.
-- v12: bản đồ chỉ zoom 1 lần ở mức 16 khi lấy GPS đầu tiên; các lần cập nhật GPS sau chỉ pan theo vị trí, không phóng to liên tục.
+Bản v13 thêm Auto Intersection + Snap/Split:
+
+- Tự phát hiện giao cắt thật giữa các line trong KMZ.
+- Nếu line A-B liền mạch bị line khác cắt tại D nhưng file KMZ không có điểm D, app tự tạo D và tách A-B thành A-D + D-B.
+- Snap sai số nhỏ <= 3m cho các đầu/cuối line bị lệch nhẹ.
+- Giữ logic GPS v12: chỉ zoom lần đầu ở mức 16, sau đó pan nhẹ.
+- Giữ nút chọn KMZ/KML khác.
+
+Mở sau khi deploy:
+
+https://tienviettel.github.io/Route_ins/?v=13

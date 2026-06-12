@@ -2,6 +2,8 @@ const DEFAULT_FILE = 'Route.kmz';
 const statusEl = document.getElementById('status');
 const infoEl = document.getElementById('info');
 const stepsEl = document.getElementById('steps');
+const bigArrowEl = document.getElementById('bigArrow');
+const navTextEl = document.getElementById('navText');
 
 let routeSegments = [];
 let guidePath = [];
@@ -9,8 +11,9 @@ let currentUserPos = null;
 let watchId = null;
 let traveledPoints = [];
 let nextIndex = 0;
+let mapCenteredOnce = false;
 
-let userMarker, routeLayer, guideLayer, arrowLayer, traveledLayer, targetMarker;
+let userMarker, routeLayer, guideLayer, arrowLayer, traveledLayer, targetMarker, directionMarker;
 
 function setStatus(t){ statusEl.textContent = t; }
 function toRad(d){ return d * Math.PI / 180; }
@@ -35,6 +38,7 @@ function turnText(deg){
   if (deg < 292.5) return 'rẽ trái';
   return 'chếch trái';
 }
+function mid(a,b){ return {lat:(a.lat+b.lat)/2, lng:(a.lng+b.lng)/2}; }
 
 const map = L.map('map', { zoomControl:true }).setView([16.047,108.206], 6);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
@@ -110,20 +114,40 @@ function closestIndex(path, pos){
   return {index:best, distance:d};
 }
 
-function clearLayers(){ [routeLayer,guideLayer,arrowLayer,traveledLayer,targetMarker].forEach(l=>l&&l.remove()); }
+function arrowIcon(deg, big=false){
+  return L.divIcon({
+    className: big ? 'directionArrowIcon' : 'pathArrowIcon',
+    html: `<div class="arrowShape" style="transform: rotate(${deg}deg)">➤</div>`,
+    iconSize: big ? [54,54] : [34,34],
+    iconAnchor: big ? [27,27] : [17,17]
+  });
+}
+function clearLayers(){ [routeLayer,guideLayer,arrowLayer,traveledLayer,targetMarker,directionMarker].forEach(l=>l&&l.remove()); }
+function drawRouteArrows(path){
+  arrowLayer = L.layerGroup().addTo(map);
+  if (!path || path.length < 2) return;
+  let lastArrowAt = 0;
+  for (let i=1;i<path.length;i++){
+    const a = path[i-1], b = path[i];
+    const segLen = dist(a,b);
+    lastArrowAt += segLen;
+    if (lastArrowAt >= 60 || i === 1){
+      L.marker(mid(a,b), {icon: arrowIcon(bearing(a,b)), interactive:false}).addTo(arrowLayer);
+      lastArrowAt = 0;
+    }
+  }
+}
 function drawAll(){
   clearLayers();
   routeLayer = L.layerGroup().addTo(map);
-  routeSegments.forEach(s=>L.polyline(s,{color:'#38bdf8',weight:5,opacity:.75}).addTo(routeLayer));
+  routeSegments.forEach(s=>L.polyline(s,{color:'#38bdf8',weight:5,opacity:.65}).addTo(routeLayer));
   if (guidePath.length){
     guideLayer = L.polyline(guidePath,{color:'#facc15',weight:7,opacity:.95}).addTo(map);
-    if (window.L.polylineDecorator) {
-      arrowLayer = L.polylineDecorator(guideLayer, {patterns:[{offset:30, repeat:80, symbol:L.Symbol.arrowHead({pixelSize:14, polygon:false, pathOptions:{color:'#facc15',weight:3,opacity:1}})}]}).addTo(map);
-    }
+    drawRouteArrows(guidePath);
   }
-  traveledLayer = L.polyline(traveledPoints,{color:'#22c55e',weight:9,opacity:.95}).addTo(map);
+  traveledLayer = L.polyline(traveledPoints,{color:'#22c55e',weight:10,opacity:.95}).addTo(map);
   const all = routeSegments.flat();
-  if (all.length) map.fitBounds(L.latLngBounds(all.map(p=>[p.lat,p.lng])),{padding:[25,25]});
+  if (all.length && !currentUserPos) map.fitBounds(L.latLngBounds(all.map(p=>[p.lat,p.lng])),{padding:[25,25]});
 }
 function updateUser(pos){
   currentUserPos = pos;
@@ -135,21 +159,26 @@ function updateUser(pos){
     const c = closestIndex(guidePath,pos);
     nextIndex = Math.min(guidePath.length-1, Math.max(nextIndex, c.index+1));
     const target = guidePath[nextIndex];
+    const br = bearing(pos,target);
     if (targetMarker) targetMarker.remove();
     targetMarker = L.circleMarker(target,{radius:8,color:'#ef4444',weight:3,fillOpacity:.8}).addTo(map).bindPopup('Điểm cần tới tiếp theo');
-    updateSteps(pos,target,c.distance);
-    map.setView(pos, Math.max(map.getZoom(),17));
+    if (directionMarker) directionMarker.remove();
+    directionMarker = L.marker(pos, {icon: arrowIcon(br,true), interactive:false, zIndexOffset:1000}).addTo(map);
+    bigArrowEl.style.transform = `rotate(${br}deg)`;
+    navTextEl.textContent = `${turnText(br).toUpperCase()} • ${fmt(dist(pos,target))}`;
+    updateSteps(pos,target,c.distance,br);
+    if (!mapCenteredOnce){ map.setView(pos, 18); mapCenteredOnce = true; }
+    else map.panTo(pos, {animate:true, duration:.4});
   }
 }
-function updateSteps(pos,target,offRoute){
+function updateSteps(pos,target,offRoute,br){
   stepsEl.innerHTML='';
   const remain = guidePath.slice(Math.max(0,nextIndex-1)).reduce((s,p,i,a)=>i?s+dist(a[i-1],p):0,0);
-  const br = bearing(pos,target);
   const rows = [
-    `Đi theo mũi tên màu vàng trên bản đồ. Điểm đỏ là điểm cần tới tiếp theo.`,
-    `Từ vị trí hiện tại: ${turnText(br)} về hướng ${Math.round(br)}°, còn ${fmt(dist(pos,target))} tới điểm tiếp theo.`,
-    `Bạn đang cách đường KMZ khoảng ${fmt(offRoute)}.`,
-    `Đường màu xanh lá là đoạn GPS đã ghi lại bạn đã đi. Còn lại khoảng ${fmt(remain)}.`
+    `Mũi tên vàng lớn trên vị trí của bạn là hướng cần đi ngay bây giờ.`,
+    `Các mũi tên nhỏ màu vàng nằm dọc theo tuyến, hãy đi theo chiều các mũi tên đó.`,
+    `${turnText(br)} hướng ${Math.round(br)}°, còn ${fmt(dist(pos,target))} tới điểm đỏ tiếp theo.`,
+    `Bạn đang cách đường KMZ khoảng ${fmt(offRoute)}. Đường màu xanh lá là đoạn đã đi. Còn lại khoảng ${fmt(remain)}.`
   ];
   rows.forEach(t=>{const li=document.createElement('li'); li.textContent=t; stepsEl.appendChild(li);});
   infoEl.textContent = `Đang theo dõi GPS. Đã ghi ${traveledPoints.length} điểm.`;
@@ -162,6 +191,7 @@ async function loadRoute(fileOrUrl){
     guidePath = optimizePath(currentUserPos);
     traveledPoints = [];
     nextIndex = 0;
+    mapCenteredOnce = false;
     drawAll();
     setStatus('Đã tải route. Bấm “Lấy vị trí / Bắt đầu theo dõi”.');
     infoEl.textContent = `Route có ${routeSegments.length} đoạn, ${routeSegments.flat().length} điểm, dài khoảng ${fmt(totalLen(mergeSegments(routeSegments)))}.`;

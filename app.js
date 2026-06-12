@@ -1,205 +1,198 @@
-// Route KMZ Navigator
-// Chạy tốt trên GitHub Pages vì Geolocation yêu cầu HTTPS.
-
 const DEFAULT_FILE = 'Route.kmz';
 const statusEl = document.getElementById('status');
 const infoEl = document.getElementById('info');
 const stepsEl = document.getElementById('steps');
 
 let routeSegments = [];
-let optimizedPath = [];
-let userMarker = null;
-let routeLayer = null;
-let optimizedLayer = null;
-let arrowLayer = null;
+let guidePath = [];
 let currentUserPos = null;
+let watchId = null;
+let traveledPoints = [];
+let nextIndex = 0;
 
-const map = L.map('map', { zoomControl: true }).setView([10.77, 106.67], 15);
+let userMarker, routeLayer, guideLayer, arrowLayer, traveledLayer, targetMarker;
 
-// Bản đồ vệ tinh Esri, miễn phí cho public usage theo điều khoản Esri/Leaflet.
-L.tileLayer(
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  { maxZoom: 20, attribution: 'Tiles © Esri' }
-).addTo(map);
-
-function setStatus(msg) { statusEl.textContent = msg; }
-function toRad(d) { return d * Math.PI / 180; }
-function haversine(a, b) {
-  const R = 6371000;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const s1 = Math.sin(dLat / 2) ** 2;
-  const s2 = Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(s1 + s2));
+function setStatus(t){ statusEl.textContent = t; }
+function toRad(d){ return d * Math.PI / 180; }
+function dist(a,b){
+  const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
+  const s=Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
 }
-function fmtMeters(m) { return m < 1000 ? `${Math.round(m)} m` : `${(m/1000).toFixed(2)} km`; }
-
-function parseCoordinates(text) {
-  return text.trim().split(/\s+/).map(item => {
-    const [lng, lat] = item.split(',').map(Number);
-    return { lat, lng };
-  }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
+function fmt(m){ return m < 1000 ? `${Math.round(m)} m` : `${(m/1000).toFixed(2)} km`; }
+function bearing(a,b){
+  const y=Math.sin(toRad(b.lng-a.lng))*Math.cos(toRad(b.lat));
+  const x=Math.cos(toRad(a.lat))*Math.sin(toRad(b.lat))-Math.sin(toRad(a.lat))*Math.cos(toRad(b.lat))*Math.cos(toRad(b.lng-a.lng));
+  return (Math.atan2(y,x)*180/Math.PI+360)%360;
 }
-
-function parseKml(kmlText) {
-  const xml = new DOMParser().parseFromString(kmlText, 'text/xml');
-  const errors = xml.getElementsByTagName('parsererror');
-  if (errors.length) throw new Error('File KML không đọc được.');
-  const coordNodes = [...xml.getElementsByTagName('coordinates')];
-  const segments = coordNodes.map(n => parseCoordinates(n.textContent)).filter(s => s.length >= 2);
-  if (!segments.length) throw new Error('Không thấy LineString/coordinates trong file.');
-  return segments;
+function turnText(deg){
+  if (deg < 22.5 || deg >= 337.5) return 'đi thẳng';
+  if (deg < 67.5) return 'chếch phải';
+  if (deg < 112.5) return 'rẽ phải';
+  if (deg < 157.5) return 'quay phải nhiều';
+  if (deg < 202.5) return 'quay lại';
+  if (deg < 247.5) return 'quay trái nhiều';
+  if (deg < 292.5) return 'rẽ trái';
+  return 'chếch trái';
 }
 
-async function readRouteFile(fileOrUrl) {
-  let name = typeof fileOrUrl === 'string' ? fileOrUrl : fileOrUrl.name;
-  let buffer;
+const map = L.map('map', { zoomControl:true }).setView([16.047,108.206], 6);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 20,
+  attribution: 'Ảnh vệ tinh © Esri'
+}).addTo(map);
+L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 20,
+  attribution: 'Nhãn © Esri'
+}).addTo(map);
+
+function parseCoords(text){
+  return text.trim().split(/\s+/).map(x=>{
+    const parts=x.split(',').map(Number);
+    return {lng:parts[0], lat:parts[1]};
+  }).filter(p=>Number.isFinite(p.lat)&&Number.isFinite(p.lng));
+}
+function parseKml(kml){
+  const xml = new DOMParser().parseFromString(kml, 'text/xml');
+  if (xml.getElementsByTagName('parsererror').length) throw new Error('File KML bị lỗi, không đọc được.');
+  const nodes = [...xml.getElementsByTagName('coordinates')];
+  const segs = nodes.map(n=>parseCoords(n.textContent)).filter(s=>s.length>=2);
+  if (!segs.length) throw new Error('Không tìm thấy đường LineString trong file KMZ/KML.');
+  return segs;
+}
+async function readFile(fileOrUrl){
+  const name = typeof fileOrUrl === 'string' ? fileOrUrl : fileOrUrl.name;
+  let buf;
   if (typeof fileOrUrl === 'string') {
-    const res = await fetch(fileOrUrl);
-    if (!res.ok) throw new Error(`Không tải được ${fileOrUrl}`);
-    buffer = await res.arrayBuffer();
+    const res = await fetch(fileOrUrl + '?v=' + Date.now());
+    if (!res.ok) throw new Error('Không tải được Route.kmz. Kiểm tra file có nằm cùng thư mục index.html không.');
+    buf = await res.arrayBuffer();
   } else {
-    buffer = await fileOrUrl.arrayBuffer();
+    buf = await fileOrUrl.arrayBuffer();
   }
   if (name.toLowerCase().endsWith('.kmz')) {
-    const zip = await JSZip.loadAsync(buffer);
-    const kmlFileName = Object.keys(zip.files).find(n => n.toLowerCase().endsWith('.kml'));
-    if (!kmlFileName) throw new Error('KMZ không có file KML bên trong.');
-    return parseKml(await zip.file(kmlFileName).async('text'));
+    if (!window.JSZip) throw new Error('Thiếu thư viện JSZip, hãy kiểm tra mạng/CDN.');
+    const zip = await JSZip.loadAsync(buf);
+    const kmlName = Object.keys(zip.files).find(n=>n.toLowerCase().endsWith('.kml'));
+    if (!kmlName) throw new Error('KMZ không có file .kml bên trong.');
+    return parseKml(await zip.file(kmlName).async('text'));
   }
-  return parseKml(new TextDecoder().decode(buffer));
+  return parseKml(new TextDecoder('utf-8').decode(buf));
 }
 
-function drawRoute() {
-  if (routeLayer) routeLayer.remove();
-  if (optimizedLayer) optimizedLayer.remove();
-  if (arrowLayer) arrowLayer.remove();
-
-  routeLayer = L.layerGroup().addTo(map);
-  for (const seg of routeSegments) {
-    L.polyline(seg, { weight: 5, opacity: 0.75 }).addTo(routeLayer);
-  }
-  const all = routeSegments.flat();
-  map.fitBounds(L.latLngBounds(all.map(p => [p.lat, p.lng])), { padding: [30, 30] });
-}
-
-function nearestEndpointIndex(path, pos) {
-  const dStart = haversine(pos, path[0]);
-  const dEnd = haversine(pos, path[path.length - 1]);
-  return dStart <= dEnd ? 0 : path.length - 1;
-}
-
-function mergeSegments(segments) {
-  // Với route dạng 1 LineString thì giữ nguyên.
-  // Với nhiều LineString, nối greedily theo đầu/cuối gần nhất để giảm nhảy tuyến.
-  let unused = segments.map(s => [...s]);
-  let path = unused.shift();
-  while (unused.length) {
-    const end = path[path.length - 1];
-    let best = { i: 0, reverse: false, dist: Infinity };
-    unused.forEach((s, i) => {
-      const d0 = haversine(end, s[0]);
-      const d1 = haversine(end, s[s.length - 1]);
-      if (d0 < best.dist) best = { i, reverse: false, dist: d0 };
-      if (d1 < best.dist) best = { i, reverse: true, dist: d1 };
+function mergeSegments(segs){
+  let unused = segs.map(s=>s.slice());
+  let path = unused.shift() || [];
+  while(unused.length){
+    const end = path[path.length-1];
+    let best = {i:0, rev:false, d:Infinity};
+    unused.forEach((s,i)=>{
+      const d0=dist(end,s[0]), d1=dist(end,s[s.length-1]);
+      if(d0<best.d) best={i,rev:false,d:d0};
+      if(d1<best.d) best={i,rev:true,d:d1};
     });
-    let next = unused.splice(best.i, 1)[0];
-    if (best.reverse) next.reverse();
-    path = path.concat(next);
+    const nxt = unused.splice(best.i,1)[0];
+    if(best.rev) nxt.reverse();
+    path = path.concat(nxt);
   }
   return path;
 }
-
-function optimizeFromCurrentLocation(pos) {
-  let path = mergeSegments(routeSegments);
-  if (nearestEndpointIndex(path, pos) === path.length - 1) path.reverse();
-  optimizedPath = path;
-  return path;
+function optimizePath(pos){
+  let p = mergeSegments(routeSegments);
+  if (!p.length) return [];
+  if (pos && dist(pos,p[p.length-1]) < dist(pos,p[0])) p.reverse();
+  return p;
+}
+function totalLen(path){ return path.reduce((s,p,i)=>i?s+dist(path[i-1],p):0,0); }
+function closestIndex(path, pos){
+  let best=0, d=Infinity;
+  path.forEach((p,i)=>{const x=dist(pos,p); if(x<d){d=x; best=i;}});
+  return {index:best, distance:d};
 }
 
-function drawOptimized(path) {
-  if (optimizedLayer) optimizedLayer.remove();
-  if (arrowLayer) arrowLayer.remove();
-  optimizedLayer = L.polyline(path, { weight: 8, opacity: 0.9, dashArray: '8 8' }).addTo(map);
-  arrowLayer = L.layerGroup().addTo(map);
-
-  for (let i = 0; i < path.length; i += Math.max(1, Math.floor(path.length / 12))) {
-    L.circleMarker(path[i], { radius: 5, weight: 2, fillOpacity: 1 })
-      .bindPopup(`Điểm ${i + 1}/${path.length}`)
-      .addTo(arrowLayer);
+function clearLayers(){ [routeLayer,guideLayer,arrowLayer,traveledLayer,targetMarker].forEach(l=>l&&l.remove()); }
+function drawAll(){
+  clearLayers();
+  routeLayer = L.layerGroup().addTo(map);
+  routeSegments.forEach(s=>L.polyline(s,{color:'#38bdf8',weight:5,opacity:.75}).addTo(routeLayer));
+  if (guidePath.length){
+    guideLayer = L.polyline(guidePath,{color:'#facc15',weight:7,opacity:.95}).addTo(map);
+    if (window.L.polylineDecorator) {
+      arrowLayer = L.polylineDecorator(guideLayer, {patterns:[{offset:30, repeat:80, symbol:L.Symbol.arrowHead({pixelSize:14, polygon:false, pathOptions:{color:'#facc15',weight:3,opacity:1}})}]}).addTo(map);
+    }
   }
-
-  const bounds = L.latLngBounds(path.map(p => [p.lat, p.lng]));
-  if (currentUserPos) bounds.extend([currentUserPos.lat, currentUserPos.lng]);
-  map.fitBounds(bounds, { padding: [35, 35] });
+  traveledLayer = L.polyline(traveledPoints,{color:'#22c55e',weight:9,opacity:.95}).addTo(map);
+  const all = routeSegments.flat();
+  if (all.length) map.fitBounds(L.latLngBounds(all.map(p=>[p.lat,p.lng])),{padding:[25,25]});
 }
-
-function updateSteps(path, pos) {
-  stepsEl.innerHTML = '';
-  const first = path[0];
-  const last = path[path.length - 1];
-  const total = path.reduce((sum, p, i) => i ? sum + haversine(path[i - 1], p) : 0, 0);
-  const dToStart = haversine(pos, first);
+function updateUser(pos){
+  currentUserPos = pos;
+  if(!userMarker){ userMarker = L.marker(pos).addTo(map).bindPopup('Vị trí của bạn'); }
+  else userMarker.setLatLng(pos);
+  traveledPoints.push(pos);
+  if (traveledLayer) traveledLayer.setLatLngs(traveledPoints);
+  if (guidePath.length) {
+    const c = closestIndex(guidePath,pos);
+    nextIndex = Math.min(guidePath.length-1, Math.max(nextIndex, c.index+1));
+    const target = guidePath[nextIndex];
+    if (targetMarker) targetMarker.remove();
+    targetMarker = L.circleMarker(target,{radius:8,color:'#ef4444',weight:3,fillOpacity:.8}).addTo(map).bindPopup('Điểm cần tới tiếp theo');
+    updateSteps(pos,target,c.distance);
+    map.setView(pos, Math.max(map.getZoom(),17));
+  }
+}
+function updateSteps(pos,target,offRoute){
+  stepsEl.innerHTML='';
+  const remain = guidePath.slice(Math.max(0,nextIndex-1)).reduce((s,p,i,a)=>i?s+dist(a[i-1],p):0,0);
+  const br = bearing(pos,target);
   const rows = [
-    `Từ vị trí hiện tại, đi tới điểm bắt đầu gần nhất của route: ${fmtMeters(dToStart)}.`,
-    `Sau đó đi theo đường nét đứt trên bản đồ vệ tinh đến cuối tuyến.`,
-    `Chiều dài route cần đi: khoảng ${fmtMeters(total)}.`,
-    `Điểm kết thúc: ${last.lat.toFixed(6)}, ${last.lng.toFixed(6)}.`
+    `Đi theo mũi tên màu vàng trên bản đồ. Điểm đỏ là điểm cần tới tiếp theo.`,
+    `Từ vị trí hiện tại: ${turnText(br)} về hướng ${Math.round(br)}°, còn ${fmt(dist(pos,target))} tới điểm tiếp theo.`,
+    `Bạn đang cách đường KMZ khoảng ${fmt(offRoute)}.`,
+    `Đường màu xanh lá là đoạn GPS đã ghi lại bạn đã đi. Còn lại khoảng ${fmt(remain)}.`
   ];
-  for (const text of rows) {
-    const li = document.createElement('li');
-    li.textContent = text;
-    stepsEl.appendChild(li);
-  }
-  infoEl.textContent = `Đã tối ưu hướng đi theo vị trí hiện tại. Route có ${path.length} điểm.`;
+  rows.forEach(t=>{const li=document.createElement('li'); li.textContent=t; stepsEl.appendChild(li);});
+  infoEl.textContent = `Đang theo dõi GPS. Đã ghi ${traveledPoints.length} điểm.`;
 }
 
-function locateUser() {
-  if (!navigator.geolocation) {
-    setStatus('Trình duyệt không hỗ trợ định vị.');
-    return;
-  }
-  setStatus('Đang xin quyền và lấy vị trí thiết bị...');
-  navigator.geolocation.getCurrentPosition(pos => {
-    currentUserPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    if (userMarker) userMarker.remove();
-    userMarker = L.marker(currentUserPos).addTo(map).bindPopup('Vị trí của bạn').openPopup();
-    if (!routeSegments.length) {
-      setStatus('Đã có vị trí. Hãy tải route trước.');
-      return;
-    }
-    const path = optimizeFromCurrentLocation(currentUserPos);
-    drawOptimized(path);
-    updateSteps(path, currentUserPos);
-    setStatus('Sẵn sàng dẫn đường.');
-  }, err => {
-    setStatus(`Không lấy được vị trí: ${err.message}`);
-  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+async function loadRoute(fileOrUrl){
+  try{
+    setStatus('Đang đọc file KMZ/KML...');
+    routeSegments = await readFile(fileOrUrl);
+    guidePath = optimizePath(currentUserPos);
+    traveledPoints = [];
+    nextIndex = 0;
+    drawAll();
+    setStatus('Đã tải route. Bấm “Lấy vị trí / Bắt đầu theo dõi”.');
+    infoEl.textContent = `Route có ${routeSegments.length} đoạn, ${routeSegments.flat().length} điểm, dài khoảng ${fmt(totalLen(mergeSegments(routeSegments)))}.`;
+  }catch(e){ console.error(e); setStatus('Lỗi: '+e.message); }
 }
 
-async function loadRoute(fileOrUrl) {
-  try {
-    setStatus('Đang đọc route...');
-    routeSegments = await readRouteFile(fileOrUrl);
-    drawRoute();
-    setStatus('Đã tải route. Bấm “Lấy vị trí của tôi” để tối ưu hướng đi.');
-    const points = routeSegments.flat().length;
-    infoEl.textContent = `Route gồm ${routeSegments.length} đoạn, ${points} điểm tọa độ.`;
-    if (currentUserPos) {
-      const path = optimizeFromCurrentLocation(currentUserPos);
-      drawOptimized(path);
-      updateSteps(path, currentUserPos);
-    }
-  } catch (e) {
-    console.error(e);
-    setStatus(e.message);
-  }
+function startLocate(){
+  if(!navigator.geolocation){ setStatus('Trình duyệt không hỗ trợ GPS.'); return; }
+  if(location.protocol !== 'https:' && location.hostname !== 'localhost') setStatus('GPS cần HTTPS. Hãy mở bằng link GitHub Pages https://...');
+  setStatus('Đang xin quyền vị trí. Nếu trình duyệt hỏi, chọn Allow/Cho phép.');
+  if(watchId) navigator.geolocation.clearWatch(watchId);
+  watchId = navigator.geolocation.watchPosition(p=>{
+    const pos = {lat:p.coords.latitude, lng:p.coords.longitude};
+    if(!guidePath.length && routeSegments.length){ guidePath = optimizePath(pos); drawAll(); }
+    updateUser(pos);
+    setStatus(`GPS OK. Độ chính xác khoảng ${fmt(p.coords.accuracy || 0)}.`);
+  }, err=>{
+    setStatus('Không lấy được vị trí: '+err.message+'. Hãy bật Location/GPS và cho phép quyền vị trí cho trình duyệt.');
+  }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
+}
+function stopLocate(){
+  if(watchId) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+  setStatus('Đã dừng theo dõi GPS.');
 }
 
-document.getElementById('locateBtn').addEventListener('click', locateUser);
-document.getElementById('fileInput').addEventListener('change', e => {
-  const file = e.target.files[0];
-  if (file) loadRoute(file);
+document.getElementById('locateBtn').onclick = startLocate;
+document.getElementById('stopBtn').onclick = stopLocate;
+document.getElementById('fileInput').addEventListener('change', e=>{
+  const f=e.target.files && e.target.files[0];
+  if(f) loadRoute(f);
 });
 
-loadRoute(DEFAULT_FILE);
+window.addEventListener('load', ()=>loadRoute(DEFAULT_FILE));

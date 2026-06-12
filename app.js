@@ -1,5 +1,4 @@
 const DEFAULT_FILE = 'Route.kmz';
-const statusEl = document.getElementById('status');
 const infoEl = document.getElementById('info');
 const stepsEl = document.getElementById('steps');
 const bigArrowEl = document.getElementById('bigArrow');
@@ -16,7 +15,7 @@ let guideBuiltFromGps = false;
 
 let userMarker, routeLayer, guideLayer, arrowLayer, traveledLayer, targetMarker, directionMarker, activeGuideLayer;
 
-function setStatus(t){ if(statusEl) statusEl.textContent = t; }
+function setStatus(t){ if(t) console.log(t); }
 function toRad(d){ return d * Math.PI / 180; }
 function dist(a,b){
   const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
@@ -301,7 +300,7 @@ function updateUser(pos){
     drawAll();
     setStatus('Đã chọn điểm gần GPS nhất trên chính đoạn KMZ. Không vẽ thêm đường ngoài KMZ.');
   }
-  if(!userMarker){ userMarker = L.marker(pos).addTo(map).bindPopup('Vị trí của bạn'); }
+  if(!userMarker){ userMarker = L.marker(pos).addTo(map); }
   else userMarker.setLatLng(pos);
   traveledPoints.push(pos);
   if (traveledLayer) traveledLayer.setLatLngs(traveledPoints);

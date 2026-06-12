@@ -1,10 +1,7 @@
 *{box-sizing:border-box}
 html,body{height:100%;margin:0;background:#020617;font-family:Arial,Helvetica,sans-serif;overflow:hidden}
 #map{position:fixed;inset:0;width:100vw;height:100vh;background:#020617}
-#status{position:fixed;left:10px;top:10px;z-index:1000;max-width:72vw;background:rgba(15,23,42,.72);color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:10px;padding:7px 10px;font-size:13px;font-weight:700;pointer-events:none}
-#status:empty{display:none}
 .leaflet-control-attribution{font-size:10px}
 .pathArrowIcon,.directionArrowIcon{background:transparent;border:none}
 .arrowShape{display:flex;align-items:center;justify-content:center;transform-origin:50% 50%;filter:drop-shadow(0 2px 4px #000)}
 .directionArrowIcon .arrowShape{filter:drop-shadow(0 3px 6px #000)}
-@media(max-width:640px){#status{font-size:12px;max-width:84vw}}

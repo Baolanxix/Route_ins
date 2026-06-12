@@ -1,9 +1,8 @@
-# Route Navigator v7
+# Route Navigator v9
 
-- Bản đồ vệ tinh
-- Đọc KMZ/KML
-- GPS realtime
-- Chọn điểm bắt đầu là điểm gần GPS nhất trên chính đoạn KMZ
-- Không nối các LineString rời bằng đường thẳng mới
-- Mũi tên chỉ hiện trên đoạn KMZ sắp đi
-- Đoạn đã đi màu xanh lá
+Bản tối giản:
+- Không có bảng chỉ dẫn phía dưới.
+- Không có banner hướng dẫn/đang tải trên bản đồ.
+- Không có điểm đỏ điểm tới tiếp theo.
+- Không có nút chọn file KMZ/KML khác.
+- Tự tải Route.kmz và tự xin GPS.

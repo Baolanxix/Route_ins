@@ -12,8 +12,9 @@ let watchId = null;
 let traveledPoints = [];
 let nextIndex = 0;
 let mapCenteredOnce = false;
+let guideBuiltFromGps = false;
 
-let userMarker, routeLayer, guideLayer, arrowLayer, traveledLayer, targetMarker, directionMarker;
+let userMarker, routeLayer, guideLayer, arrowLayer, traveledLayer, targetMarker, directionMarker, activeGuideLayer;
 
 function setStatus(t){ statusEl.textContent = t; }
 function toRad(d){ return d * Math.PI / 180; }
@@ -173,32 +174,40 @@ function arrowIcon(deg, big=false){
     iconAnchor: [size/2,size/2]
   });
 }
-function clearLayers(){ [routeLayer,guideLayer,arrowLayer,traveledLayer,targetMarker,directionMarker].forEach(l=>l&&l.remove()); }
-function drawRouteArrows(path){
+function drawUpcomingGuide(pos){
+  // Chỉ hiện mũi tên của đoạn SẮP ĐI, giống Google Maps.
+  // Không vẽ mũi tên trên toàn bộ KMZ để tránh rối.
+  if (arrowLayer) arrowLayer.remove();
+  if (activeGuideLayer) activeGuideLayer.remove();
   arrowLayer = L.layerGroup().addTo(map);
-  if (!path || path.length < 2) return;
+  if (!guidePath || guidePath.length < 2 || !pos) return;
 
-  // Vẽ mũi tên THEO TỪNG ĐOẠN của route, không dùng icon ngang cố định.
-  // Mỗi đoạn dài sẽ có nhiều mũi tên, đoạn ngắn có 1 mũi tên ở giữa.
-  for (let i=1;i<path.length;i++){
-    const a = path[i-1], b = path[i];
+  const fromIndex = Math.max(1, nextIndex);
+  const ahead = guidePath.slice(fromIndex, Math.min(guidePath.length, fromIndex + 5));
+  const active = [pos].concat(ahead);
+  activeGuideLayer = L.polyline(active, {color:'#facc15',weight:10,opacity:1}).addTo(map);
+
+  // Mũi tên hiện trên đoạn ngay trước mặt + vài đoạn kế tiếp, không quá nhiều.
+  for (let i=1;i<active.length;i++){
+    const a = active[i-1], b = active[i];
     const segLen = dist(a,b);
-    if (segLen < 3) continue;
+    if (segLen < 5) continue;
     const br = bearing(a,b);
-    const count = Math.max(1, Math.floor(segLen / 90));
+    const count = Math.min(3, Math.max(1, Math.floor(segLen / 120)));
     for (let k=1;k<=count;k++){
-      const t = (k)/(count+1);
-      L.marker(pointAt(a,b,t), {icon: arrowIcon(br), interactive:false, zIndexOffset:600}).addTo(arrowLayer);
+      const t = k/(count+1);
+      L.marker(pointAt(a,b,t), {icon: arrowIcon(br), interactive:false, zIndexOffset:700}).addTo(arrowLayer);
     }
   }
 }
+function clearLayers(){ [routeLayer,guideLayer,arrowLayer,activeGuideLayer,traveledLayer,targetMarker,directionMarker].forEach(l=>l&&l.remove()); }
 function drawAll(){
   clearLayers();
   routeLayer = L.layerGroup().addTo(map);
-  routeSegments.forEach(s=>L.polyline(s,{color:'#38bdf8',weight:5,opacity:.65}).addTo(routeLayer));
+  routeSegments.forEach(s=>L.polyline(s,{color:'#38bdf8',weight:5,opacity:.55}).addTo(routeLayer));
+  // Đường cần đi chỉ vẽ nét mỏng để biết tổng tuyến; mũi tên chỉ hiện gần vị trí hiện tại.
   if (guidePath.length){
-    guideLayer = L.polyline(guidePath,{color:'#facc15',weight:7,opacity:.95}).addTo(map);
-    drawRouteArrows(guidePath);
+    guideLayer = L.polyline(guidePath,{color:'#facc15',weight:4,opacity:.45,dashArray:'8 10'}).addTo(map);
   }
   traveledLayer = L.polyline(traveledPoints,{color:'#22c55e',weight:10,opacity:.95}).addTo(map);
   const all = routeSegments.flat();
@@ -206,6 +215,14 @@ function drawAll(){
 }
 function updateUser(pos){
   currentUserPos = pos;
+  // Lần đầu lấy GPS: tạo lại tuyến bắt đầu tại điểm gần GPS nhất, không dùng đầu file KMZ.
+  if (routeSegments.length && !guideBuiltFromGps){
+    guidePath = optimizePath(pos);
+    nextIndex = 1;
+    guideBuiltFromGps = true;
+    drawAll();
+    setStatus('Đã chọn điểm xuất phát gần GPS nhất trên route.');
+  }
   if(!userMarker){ userMarker = L.marker(pos).addTo(map).bindPopup('Vị trí của bạn'); }
   else userMarker.setLatLng(pos);
   traveledPoints.push(pos);
@@ -219,6 +236,7 @@ function updateUser(pos){
     targetMarker = L.circleMarker(target,{radius:8,color:'#ef4444',weight:3,fillOpacity:.8}).addTo(map).bindPopup('Điểm cần tới tiếp theo');
     if (directionMarker) directionMarker.remove();
     directionMarker = L.marker(pos, {icon: arrowIcon(br,true), interactive:false, zIndexOffset:1000}).addTo(map);
+    drawUpcomingGuide(pos);
     bigArrowEl.style.transform = `rotate(${br}deg)`;
     navTextEl.textContent = `${turnText(br).toUpperCase()} • ${fmt(dist(pos,target))}`;
     updateSteps(pos,target,c.distance,br);
@@ -231,7 +249,7 @@ function updateSteps(pos,target,offRoute,br){
   const remain = guidePath.slice(Math.max(0,nextIndex-1)).reduce((s,p,i,a)=>i?s+dist(a[i-1],p):0,0);
   const rows = [
     `Mũi tên vàng lớn trên vị trí của bạn là hướng cần đi ngay bây giờ.`,
-    `Các mũi tên nhỏ màu vàng nằm dọc theo tuyến, hãy đi theo chiều các mũi tên đó.`,
+    `Mũi tên nhỏ màu vàng chỉ hiện ở đoạn sắp đi, không hiện toàn bộ route.`,
     `${turnText(br)} hướng ${Math.round(br)}°, còn ${fmt(dist(pos,target))} tới điểm đỏ tiếp theo.`,
     `Bạn đang cách đường KMZ khoảng ${fmt(offRoute)}. Đường màu xanh lá là đoạn đã đi. Còn lại khoảng ${fmt(remain)}.`
   ];
@@ -243,9 +261,10 @@ async function loadRoute(fileOrUrl){
   try{
     setStatus('Đang đọc file KMZ/KML...');
     routeSegments = await readFile(fileOrUrl);
-    guidePath = optimizePath(currentUserPos);
+    guidePath = currentUserPos ? optimizePath(currentUserPos) : mergeSegments(routeSegments);
+    guideBuiltFromGps = !!currentUserPos;
     traveledPoints = [];
-    nextIndex = 0;
+    nextIndex = guideBuiltFromGps ? 1 : 0;
     mapCenteredOnce = false;
     drawAll();
     setStatus('Đã tải route. Bấm “Lấy vị trí / Bắt đầu theo dõi”.');
@@ -260,7 +279,6 @@ function startLocate(){
   if(watchId) navigator.geolocation.clearWatch(watchId);
   watchId = navigator.geolocation.watchPosition(p=>{
     const pos = {lat:p.coords.latitude, lng:p.coords.longitude};
-    if(!guidePath.length && routeSegments.length){ guidePath = optimizePath(pos); drawAll(); }
     updateUser(pos);
     setStatus(`GPS OK. Độ chính xác khoảng ${fmt(p.coords.accuracy || 0)}.`);
   }, err=>{

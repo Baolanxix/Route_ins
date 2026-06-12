@@ -17,26 +17,17 @@
   box-shadow:0 10px 30px rgba(0,0,0,.45);
   font-weight:700;
 }
-#bigArrow{
-  font-size:42px;
-  line-height:1;
-  color:#facc15;
-  text-shadow:0 2px 4px #000;
-  transform-origin:50% 50%;
-}
 #navText{font-size:16px;white-space:nowrap;}
 .pathArrowIcon, .directionArrowIcon{background:transparent;border:none;}
 .arrowShape{
-  color:#facc15;
-  font-size:32px;
-  line-height:32px;
-  text-shadow:0 2px 4px #000, 0 0 3px #000;
+  display:flex;align-items:center;justify-content:center;
   transform-origin:50% 50%;
+  filter: drop-shadow(0 2px 4px #000);
 }
-.directionArrowIcon .arrowShape{
-  font-size:52px;
-  line-height:52px;
-  color:#facc15;
+.directionArrowIcon .arrowShape{filter: drop-shadow(0 3px 6px #000);}
+#bigArrow{
+  width:52px;height:52px;display:flex;align-items:center;justify-content:center;
+  transform-origin:50% 50%;
   filter: drop-shadow(0 2px 4px #000);
 }
 @media (max-width: 640px){

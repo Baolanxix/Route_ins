@@ -38,7 +38,8 @@ function turnText(deg){
   if (deg < 292.5) return 'rẽ trái';
   return 'chếch trái';
 }
-function mid(a,b){ return {lat:(a.lat+b.lat)/2, lng:(a.lng+b.lng)/2}; }
+function pointAt(a,b,t){ return {lat:a.lat+(b.lat-a.lat)*t, lng:a.lng+(b.lng-a.lng)*t}; }
+function mid(a,b){ return pointAt(a,b,0.5); }
 
 const map = L.map('map', { zoomControl:true }).setView([16.047,108.206], 6);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
@@ -101,13 +102,54 @@ function mergeSegments(segs){
   }
   return path;
 }
-function optimizePath(pos){
-  let p = mergeSegments(routeSegments);
-  if (!p.length) return [];
-  if (pos && dist(pos,p[p.length-1]) < dist(pos,p[0])) p.reverse();
-  return p;
-}
 function totalLen(path){ return path.reduce((s,p,i)=>i?s+dist(path[i-1],p):0,0); }
+
+function projectPointOnSegment(p,a,b){
+  // Chiếu GPS lên từng đoạn route để tìm điểm xuất phát thật sự gần nhất,
+  // không chỉ tìm đỉnh gần nhất. Dùng hệ tọa độ phẳng cục bộ, đủ chính xác ở phạm vi vài km.
+  const lat0 = toRad((a.lat + b.lat + p.lat) / 3);
+  const ax = a.lng * Math.cos(lat0), ay = a.lat;
+  const bx = b.lng * Math.cos(lat0), by = b.lat;
+  const px = p.lng * Math.cos(lat0), py = p.lat;
+  const vx = bx - ax, vy = by - ay;
+  const wx = px - ax, wy = py - ay;
+  const vv = vx*vx + vy*vy;
+  const t = vv ? Math.max(0, Math.min(1, (wx*vx + wy*vy) / vv)) : 0;
+  const q = pointAt(a,b,t);
+  return {point:q, t, distance:dist(p,q)};
+}
+
+function buildPathFromNearestPoint(path,pos){
+  if (!pos || path.length < 2) return path;
+  let best = {seg:1, t:0, point:path[0], distance:Infinity};
+  for (let i=1;i<path.length;i++){
+    const pr = projectPointOnSegment(pos,path[i-1],path[i]);
+    if (pr.distance < best.distance) best = {seg:i, t:pr.t, point:pr.point, distance:pr.distance};
+  }
+
+  const before = path.slice(0,best.seg);       // P0 ... P(i-1)
+  const after  = path.slice(best.seg);         // Pi ... Pend
+  const startPoint = best.point;
+  const left = before.concat([startPoint]);
+  const right = [startPoint].concat(after);
+  const leftLen = totalLen(left);
+  const rightLen = totalLen(right);
+
+  // Để đi hết toàn bộ route từ điểm gần GPS nhất với quãng đường lặp nhỏ nhất:
+  // đi về phía ngắn hơn trước, rồi quay lại đi hết phía dài hơn.
+  // Tổng = chiều dài route + min(khoảng cách tới đầu, khoảng cách tới cuối).
+  if (leftLen <= rightLen) {
+    return [startPoint].concat(before.slice().reverse(), before, [startPoint], after);
+  }
+  return [startPoint].concat(after, after.slice(0,-1).reverse(), [startPoint], before.slice().reverse());
+}
+
+function optimizePath(pos){
+  const p = mergeSegments(routeSegments);
+  if (!p.length) return [];
+  return buildPathFromNearestPoint(p,pos);
+}
+
 function closestIndex(path, pos){
   let best=0, d=Infinity;
   path.forEach((p,i)=>{const x=dist(pos,p); if(x<d){d=x; best=i;}});
@@ -115,25 +157,38 @@ function closestIndex(path, pos){
 }
 
 function arrowIcon(deg, big=false){
+  const size = big ? 58 : 38;
+  // SVG arrow mặc định hướng lên Bắc. Bearing GPS: 0=Bắc, 90=Đông, 180=Nam, 270=Tây.
+  // Vì vậy rotate(deg) sẽ làm mũi tên nằm đúng dọc theo route trên bản đồ.
+  const html = `
+    <div class="arrowShape" style="width:${size}px;height:${size}px;transform: rotate(${deg}deg)">
+      <svg viewBox="0 0 40 40" width="${size}" height="${size}" aria-hidden="true">
+        <path d="M20 2 L34 35 L20 27 L6 35 Z" fill="#facc15" stroke="#111827" stroke-width="3" stroke-linejoin="round"/>
+      </svg>
+    </div>`;
   return L.divIcon({
     className: big ? 'directionArrowIcon' : 'pathArrowIcon',
-    html: `<div class="arrowShape" style="transform: rotate(${deg}deg)">➤</div>`,
-    iconSize: big ? [54,54] : [34,34],
-    iconAnchor: big ? [27,27] : [17,17]
+    html,
+    iconSize: [size,size],
+    iconAnchor: [size/2,size/2]
   });
 }
 function clearLayers(){ [routeLayer,guideLayer,arrowLayer,traveledLayer,targetMarker,directionMarker].forEach(l=>l&&l.remove()); }
 function drawRouteArrows(path){
   arrowLayer = L.layerGroup().addTo(map);
   if (!path || path.length < 2) return;
-  let lastArrowAt = 0;
+
+  // Vẽ mũi tên THEO TỪNG ĐOẠN của route, không dùng icon ngang cố định.
+  // Mỗi đoạn dài sẽ có nhiều mũi tên, đoạn ngắn có 1 mũi tên ở giữa.
   for (let i=1;i<path.length;i++){
     const a = path[i-1], b = path[i];
     const segLen = dist(a,b);
-    lastArrowAt += segLen;
-    if (lastArrowAt >= 60 || i === 1){
-      L.marker(mid(a,b), {icon: arrowIcon(bearing(a,b)), interactive:false}).addTo(arrowLayer);
-      lastArrowAt = 0;
+    if (segLen < 3) continue;
+    const br = bearing(a,b);
+    const count = Math.max(1, Math.floor(segLen / 90));
+    for (let k=1;k<=count;k++){
+      const t = (k)/(count+1);
+      L.marker(pointAt(a,b,t), {icon: arrowIcon(br), interactive:false, zIndexOffset:600}).addTo(arrowLayer);
     }
   }
 }

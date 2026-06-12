@@ -16,7 +16,7 @@ let guideBuiltFromGps = false;
 
 let userMarker, routeLayer, guideLayer, arrowLayer, traveledLayer, targetMarker, directionMarker, activeGuideLayer;
 
-function setStatus(t){ statusEl.textContent = t; }
+function setStatus(t){ if(statusEl) statusEl.textContent = t; }
 function toRad(d){ return d * Math.PI / 180; }
 function dist(a,b){
   const R=6371000, dLat=toRad(b.lat-a.lat), dLng=toRad(b.lng-a.lng);
@@ -310,30 +310,22 @@ function updateUser(pos){
     nextIndex = Math.min(guidePath.length-1, Math.max(nextIndex, c.index+1));
     const target = guidePath[nextIndex];
     const br = bearing(pos,target);
-    if (targetMarker) targetMarker.remove();
-    targetMarker = L.circleMarker(target,{radius:8,color:'#ef4444',weight:3,fillOpacity:.8}).addTo(map).bindPopup('Điểm cần tới tiếp theo');
+    if (targetMarker) { targetMarker.remove(); targetMarker = null; }
     if (directionMarker) directionMarker.remove();
     directionMarker = L.marker(pos, {icon: arrowIcon(br,true), interactive:false, zIndexOffset:1000}).addTo(map);
     drawUpcomingGuide(pos);
-    bigArrowEl.style.transform = `rotate(${br}deg)`;
-    navTextEl.textContent = `${turnText(br).toUpperCase()} • ${fmt(dist(pos,target))}`;
+    if (bigArrowEl) bigArrowEl.style.transform = `rotate(${br}deg)`;
+    if (navTextEl) navTextEl.textContent = `${turnText(br).toUpperCase()} • ${fmt(dist(pos,target))}`;
     updateSteps(pos,target,c.distance,br);
     if (!mapCenteredOnce){ map.setView(pos, 18); mapCenteredOnce = true; }
     else map.panTo(pos, {animate:true, duration:.4});
   }
 }
 function updateSteps(pos,target,offRoute,br){
-  stepsEl.innerHTML='';
-  const remain = guidePath.slice(Math.max(0,nextIndex-1)).reduce((s,p,i,a)=>i?s+dist(a[i-1],p):0,0);
-  const rows = [
-    `Mũi tên vàng lớn trên vị trí của bạn là hướng cần đi ngay bây giờ.`,
-    `Mũi tên vàng chỉ hiện trên đoạn KMZ sắp đi, không vẽ thêm đường ngoài file.`,
-    `${turnText(br)} hướng ${Math.round(br)}°, còn ${fmt(dist(pos,target))} tới điểm đỏ tiếp theo.`,
-    `Bạn đang cách tuyến đang dẫn khoảng ${fmt(offRoute)}. Đường màu xanh lá là đoạn đã đi. Còn lại khoảng ${fmt(remain)}.`
-  ];
-  rows.forEach(t=>{const li=document.createElement('li'); li.textContent=t; stepsEl.appendChild(li);});
-  infoEl.textContent = `Đang theo dõi GPS. Đã ghi ${traveledPoints.length} điểm.`;
+  if (stepsEl) stepsEl.innerHTML='';
+  if (infoEl) infoEl.textContent = `Đang theo dõi GPS. Đã ghi ${traveledPoints.length} điểm.`;
 }
+
 
 async function loadRoute(fileOrUrl){
   try{
@@ -345,20 +337,21 @@ async function loadRoute(fileOrUrl){
     nextIndex = guideBuiltFromGps ? 1 : 0;
     mapCenteredOnce = false;
     drawAll();
-    setStatus('Đã tải route. Bấm “Lấy vị trí / Bắt đầu theo dõi”.');
-    infoEl.textContent = `Route có ${routeSegments.length} đoạn, ${routeSegments.flat().length} điểm. Bấm GPS để chọn điểm bắt đầu gần nhất trên chính đường KMZ.`;
+    setStatus('Đã tải route. Đang xin quyền GPS...');
+    if (infoEl) infoEl.textContent = `Route có ${routeSegments.length} đoạn, ${routeSegments.flat().length} điểm.`;
+    startLocate();
   }catch(e){ console.error(e); setStatus('Lỗi: '+e.message); }
 }
 
 function startLocate(){
   if(!navigator.geolocation){ setStatus('Trình duyệt không hỗ trợ GPS.'); return; }
   if(location.protocol !== 'https:' && location.hostname !== 'localhost') setStatus('GPS cần HTTPS. Hãy mở bằng link GitHub Pages https://...');
-  setStatus('Đang xin quyền vị trí. Nếu trình duyệt hỏi, chọn Allow/Cho phép.');
+  setStatus('Cho phép quyền vị trí để bắt đầu dẫn đường.');
   if(watchId) navigator.geolocation.clearWatch(watchId);
   watchId = navigator.geolocation.watchPosition(p=>{
     const pos = {lat:p.coords.latitude, lng:p.coords.longitude};
     updateUser(pos);
-    setStatus(`GPS OK. Độ chính xác khoảng ${fmt(p.coords.accuracy || 0)}.`);
+    setStatus('');
   }, err=>{
     setStatus('Không lấy được vị trí: '+err.message+'. Hãy bật Location/GPS và cho phép quyền vị trí cho trình duyệt.');
   }, {enableHighAccuracy:true, maximumAge:1000, timeout:20000});
@@ -368,12 +361,5 @@ function stopLocate(){
   watchId = null;
   setStatus('Đã dừng theo dõi GPS.');
 }
-
-document.getElementById('locateBtn').onclick = startLocate;
-document.getElementById('stopBtn').onclick = stopLocate;
-document.getElementById('fileInput').addEventListener('change', e=>{
-  const f=e.target.files && e.target.files[0];
-  if(f) loadRoute(f);
-});
 
 window.addEventListener('load', ()=>loadRoute(DEFAULT_FILE));

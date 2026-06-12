@@ -8,41 +8,8 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div id="app">
-    <header>
-      <h1>Dẫn đường theo KMZ/KML</h1>
-      <p>Bản đồ vệ tinh, GPS, mũi tên chỉ hướng và tô màu đoạn đã đi.</p>
-    </header>
-
-    <section class="panel">
-      <div class="row">
-        <button id="locateBtn">📍 Lấy vị trí / Bắt đầu theo dõi</button>
-        <button id="stopBtn">⏹ Dừng theo dõi</button>
-        <label class="fileBtn">📂 Chọn KMZ/KML khác
-          <input id="fileInput" type="file" accept=".kmz,.kml,application/vnd.google-earth.kmz,application/vnd.google-earth.kml+xml" />
-        </label>
-      </div>
-      <div class="legend">
-        <span><b class="kmz"></b> Đường trong KMZ</span>
-        <span><b class="guide"></b> Đường cần đi</span>
-        <span><b class="done"></b> Đoạn đã đi</span>
-      </div>
-      <div id="status">Đang tải Route.kmz...</div>
-      <div id="info"></div>
-    </section>
-
-    <main id="map"></main>
-
-    <div id="navBox">
-      <div id="bigArrow"><svg viewBox="0 0 40 40" width="46" height="46"><path d="M20 2 L34 35 L20 27 L6 35 Z" fill="#facc15" stroke="#111827" stroke-width="3" stroke-linejoin="round"/></svg></div>
-      <div id="navText">Bấm lấy vị trí để bắt đầu</div>
-    </div>
-
-    <section class="panel instructions">
-      <h2>Chỉ dẫn</h2>
-      <ol id="steps"></ol>
-    </section>
-  </div>
+  <main id="map"></main>
+  <div id="status" aria-live="polite">Đang tải Route.kmz...</div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>

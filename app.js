@@ -86,28 +86,133 @@ async function readFile(fileOrUrl){
   return parseKml(new TextDecoder('utf-8').decode(buf));
 }
 
-function mergeSegments(segs){
-  let unused = segs.map(s=>s.slice());
-  let path = unused.shift() || [];
-  while(unused.length){
-    const end = path[path.length-1];
-    let best = {i:0, rev:false, d:Infinity};
-    unused.forEach((s,i)=>{
-      const d0=dist(end,s[0]), d1=dist(end,s[s.length-1]);
-      if(d0<best.d) best={i,rev:false,d:d0};
-      if(d1<best.d) best={i,rev:true,d:d1};
-    });
-    const nxt = unused.splice(best.i,1)[0];
-    if(best.rev) nxt.reverse();
-    path = path.concat(nxt);
+
+function nodeKey(p){ return `${p.lat.toFixed(7)},${p.lng.toFixed(7)}`; }
+function sameKey(a,b){ return a===b; }
+function edgeKey(a,b){ return a < b ? `${a}|${b}` : `${b}|${a}`; }
+
+function buildGraph(pos){
+  const nodes = new Map();
+  const adj = new Map();
+  const edges = new Map();
+  function addNode(p){
+    const k = nodeKey(p);
+    if(!nodes.has(k)) nodes.set(k, {lat:p.lat, lng:p.lng, key:k});
+    if(!adj.has(k)) adj.set(k, []);
+    return k;
   }
-  return path;
+  function addEdge(a,b){
+    const ka=addNode(a), kb=addNode(b);
+    if(ka===kb) return;
+    const ek=edgeKey(ka,kb);
+    if(edges.has(ek)) return;
+    const e={key:ek, a:ka, b:kb, len:dist(nodes.get(ka), nodes.get(kb))};
+    edges.set(ek,e);
+    adj.get(ka).push({to:kb, edge:ek});
+    adj.get(kb).push({to:ka, edge:ek});
+  }
+
+  routeSegments.forEach(seg=>{
+    for(let i=1;i<seg.length;i++) addEdge(seg[i-1], seg[i]);
+  });
+
+  // Tìm điểm gần GPS nhất trên chính các đoạn KMZ. Nếu điểm đó nằm giữa đoạn,
+  // chèn nó thành 1 node mới bằng cách tách đoạn KMZ đó làm 2. Không tạo đường ngoài KMZ.
+  let startKey = null;
+  if(pos && edges.size){
+    let best = {edge:null, point:null, t:0, distance:Infinity};
+    for(const e of edges.values()){
+      const a=nodes.get(e.a), b=nodes.get(e.b);
+      const pr=projectPointOnSegment(pos,a,b);
+      if(pr.distance < best.distance) best={edge:e, point:pr.point, t:pr.t, distance:pr.distance};
+    }
+    if(best.edge){
+      if(best.t <= 0.02) startKey = best.edge.a;
+      else if(best.t >= 0.98) startKey = best.edge.b;
+      else{
+        const old = best.edge;
+        // xóa cạnh cũ
+        edges.delete(old.key);
+        adj.set(old.a, adj.get(old.a).filter(x=>x.edge!==old.key));
+        adj.set(old.b, adj.get(old.b).filter(x=>x.edge!==old.key));
+        startKey = addNode(best.point);
+        addEdge(nodes.get(old.a), nodes.get(startKey));
+        addEdge(nodes.get(startKey), nodes.get(old.b));
+      }
+    }
+  }
+  if(!startKey){
+    const first = routeSegments[0] && routeSegments[0][0];
+    startKey = first ? addNode(first) : null;
+  }
+  return {nodes, adj, edges, startKey};
+}
+
+function componentEdges(graph,startKey){
+  const q=[startKey], seen=new Set([startKey]), edgeSet=new Set();
+  while(q.length){
+    const u=q.shift();
+    for(const nb of graph.adj.get(u)||[]){
+      edgeSet.add(nb.edge);
+      if(!seen.has(nb.to)){ seen.add(nb.to); q.push(nb.to); }
+    }
+  }
+  return edgeSet;
+}
+
+function shortestPathToUnvisited(graph, startKey, unvisitedEdges){
+  const q=[startKey], prev=new Map(), seen=new Set([startKey]);
+  let target=null;
+  while(q.length){
+    const u=q.shift();
+    const hasTodo=(graph.adj.get(u)||[]).some(x=>unvisitedEdges.has(x.edge));
+    if(hasTodo){ target=u; break; }
+    for(const nb of graph.adj.get(u)||[]){
+      if(!seen.has(nb.to)){
+        seen.add(nb.to); prev.set(nb.to,u); q.push(nb.to);
+      }
+    }
+  }
+  if(!target || target===startKey) return [];
+  const path=[];
+  let cur=target;
+  while(cur!==startKey){ path.push(cur); cur=prev.get(cur); }
+  return path.reverse();
+}
+
+function buildKmzOnlyGuide(pos){
+  const graph = buildGraph(pos);
+  if(!graph.startKey) return [];
+
+  const todo = componentEdges(graph, graph.startKey); // chỉ đi trong component có GPS gần nhất
+  const pathKeys=[graph.startKey];
+  let cur=graph.startKey;
+  let guard=0;
+
+  while(todo.size && guard++ < 20000){
+    const neighbors = graph.adj.get(cur)||[];
+    let nb = neighbors.find(x=>todo.has(x.edge));
+    if(nb){
+      todo.delete(nb.edge);
+      cur=nb.to;
+      pathKeys.push(cur);
+      continue;
+    }
+    // đang ở ngõ cụt: quay lại trên đường KMZ có sẵn tới node còn cạnh chưa đi
+    const hop = shortestPathToUnvisited(graph, cur, todo);
+    if(!hop.length) break;
+    for(const k of hop){ cur=k; pathKeys.push(cur); }
+  }
+  return pathKeys.map(k=>graph.nodes.get(k));
+}
+
+function mergeSegments(segs){
+  // Chỉ dùng để hiển thị/tính tổng, tuyệt đối không nối các đoạn rời bằng đường thẳng mới.
+  return segs.flat();
 }
 function totalLen(path){ return path.reduce((s,p,i)=>i?s+dist(path[i-1],p):0,0); }
 
 function projectPointOnSegment(p,a,b){
-  // Chiếu GPS lên từng đoạn route để tìm điểm xuất phát thật sự gần nhất,
-  // không chỉ tìm đỉnh gần nhất. Dùng hệ tọa độ phẳng cục bộ, đủ chính xác ở phạm vi vài km.
   const lat0 = toRad((a.lat + b.lat + p.lat) / 3);
   const ax = a.lng * Math.cos(lat0), ay = a.lat;
   const bx = b.lng * Math.cos(lat0), by = b.lat;
@@ -120,35 +225,8 @@ function projectPointOnSegment(p,a,b){
   return {point:q, t, distance:dist(p,q)};
 }
 
-function buildPathFromNearestPoint(path,pos){
-  if (!pos || path.length < 2) return path;
-  let best = {seg:1, t:0, point:path[0], distance:Infinity};
-  for (let i=1;i<path.length;i++){
-    const pr = projectPointOnSegment(pos,path[i-1],path[i]);
-    if (pr.distance < best.distance) best = {seg:i, t:pr.t, point:pr.point, distance:pr.distance};
-  }
-
-  const before = path.slice(0,best.seg);       // P0 ... P(i-1)
-  const after  = path.slice(best.seg);         // Pi ... Pend
-  const startPoint = best.point;
-  const left = before.concat([startPoint]);
-  const right = [startPoint].concat(after);
-  const leftLen = totalLen(left);
-  const rightLen = totalLen(right);
-
-  // Để đi hết toàn bộ route từ điểm gần GPS nhất với quãng đường lặp nhỏ nhất:
-  // đi về phía ngắn hơn trước, rồi quay lại đi hết phía dài hơn.
-  // Tổng = chiều dài route + min(khoảng cách tới đầu, khoảng cách tới cuối).
-  if (leftLen <= rightLen) {
-    return [startPoint].concat(before.slice().reverse(), before, [startPoint], after);
-  }
-  return [startPoint].concat(after, after.slice(0,-1).reverse(), [startPoint], before.slice().reverse());
-}
-
 function optimizePath(pos){
-  const p = mergeSegments(routeSegments);
-  if (!p.length) return [];
-  return buildPathFromNearestPoint(p,pos);
+  return buildKmzOnlyGuide(pos);
 }
 
 function closestIndex(path, pos){
@@ -183,8 +261,8 @@ function drawUpcomingGuide(pos){
   if (!guidePath || guidePath.length < 2 || !pos) return;
 
   const fromIndex = Math.max(1, nextIndex);
-  const ahead = guidePath.slice(fromIndex, Math.min(guidePath.length, fromIndex + 5));
-  const active = [pos].concat(ahead);
+  const active = guidePath.slice(Math.max(0, fromIndex-1), Math.min(guidePath.length, fromIndex + 6));
+  // Không vẽ đường từ GPS tới route. Chỉ vẽ đoạn có trong KMZ.
   activeGuideLayer = L.polyline(active, {color:'#facc15',weight:10,opacity:1}).addTo(map);
 
   // Mũi tên hiện trên đoạn ngay trước mặt + vài đoạn kế tiếp, không quá nhiều.
@@ -221,7 +299,7 @@ function updateUser(pos){
     nextIndex = 1;
     guideBuiltFromGps = true;
     drawAll();
-    setStatus('Đã chọn điểm xuất phát gần GPS nhất trên route.');
+    setStatus('Đã chọn điểm gần GPS nhất trên chính đoạn KMZ. Không vẽ thêm đường ngoài KMZ.');
   }
   if(!userMarker){ userMarker = L.marker(pos).addTo(map).bindPopup('Vị trí của bạn'); }
   else userMarker.setLatLng(pos);
@@ -249,9 +327,9 @@ function updateSteps(pos,target,offRoute,br){
   const remain = guidePath.slice(Math.max(0,nextIndex-1)).reduce((s,p,i,a)=>i?s+dist(a[i-1],p):0,0);
   const rows = [
     `Mũi tên vàng lớn trên vị trí của bạn là hướng cần đi ngay bây giờ.`,
-    `Mũi tên nhỏ màu vàng chỉ hiện ở đoạn sắp đi, không hiện toàn bộ route.`,
+    `Mũi tên vàng chỉ hiện trên đoạn KMZ sắp đi, không vẽ thêm đường ngoài file.`,
     `${turnText(br)} hướng ${Math.round(br)}°, còn ${fmt(dist(pos,target))} tới điểm đỏ tiếp theo.`,
-    `Bạn đang cách đường KMZ khoảng ${fmt(offRoute)}. Đường màu xanh lá là đoạn đã đi. Còn lại khoảng ${fmt(remain)}.`
+    `Bạn đang cách tuyến đang dẫn khoảng ${fmt(offRoute)}. Đường màu xanh lá là đoạn đã đi. Còn lại khoảng ${fmt(remain)}.`
   ];
   rows.forEach(t=>{const li=document.createElement('li'); li.textContent=t; stepsEl.appendChild(li);});
   infoEl.textContent = `Đang theo dõi GPS. Đã ghi ${traveledPoints.length} điểm.`;
@@ -268,7 +346,7 @@ async function loadRoute(fileOrUrl){
     mapCenteredOnce = false;
     drawAll();
     setStatus('Đã tải route. Bấm “Lấy vị trí / Bắt đầu theo dõi”.');
-    infoEl.textContent = `Route có ${routeSegments.length} đoạn, ${routeSegments.flat().length} điểm, dài khoảng ${fmt(totalLen(mergeSegments(routeSegments)))}.`;
+    infoEl.textContent = `Route có ${routeSegments.length} đoạn, ${routeSegments.flat().length} điểm. Bấm GPS để chọn điểm bắt đầu gần nhất trên chính đường KMZ.`;
   }catch(e){ console.error(e); setStatus('Lỗi: '+e.message); }
 }
 

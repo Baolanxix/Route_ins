@@ -1,7 +1,9 @@
-# Route Navigator v6
+# Route Navigator v7
 
-- Bản đồ vệ tinh Leaflet + Esri.
-- Đọc KMZ/KML.
-- Khi bấm lấy GPS, app tìm điểm gần GPS nhất trên route để bắt đầu.
-- Chỉ hiển thị mũi tên ở đoạn sắp đi, không rải mũi tên toàn tuyến.
-- Đường đã đi được tô màu xanh lá.
+- Bản đồ vệ tinh
+- Đọc KMZ/KML
+- GPS realtime
+- Chọn điểm bắt đầu là điểm gần GPS nhất trên chính đoạn KMZ
+- Không nối các LineString rời bằng đường thẳng mới
+- Mũi tên chỉ hiện trên đoạn KMZ sắp đi
+- Đoạn đã đi màu xanh lá

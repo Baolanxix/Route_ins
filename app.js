@@ -1,10 +1,12 @@
-// Field Route Navigator v11
+// Field Route Navigator v12
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
 const DONE_DIST_M = 22;
 const ARROW_LOOKAHEAD_M = 160;
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v11-state";
+const STORAGE_KEY = "field-route-v12-state";
+const FOLLOW_ZOOM = 16;
+let hasInitialGpsFix = false;
 
 let map = L.map("map", { zoomControl: false }).setView([10.8, 106.7], 17);
 L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 20 }).addTo(map);
@@ -32,7 +34,7 @@ async function init(){
 }
 
 async function loadDefaultKMZ(){
-  const res = await fetch("Route.kmz?v=11");
+  const res = await fetch("Route.kmz?v=12");
   const blob = await res.blob();
   await loadFile(blob);
 }
@@ -113,8 +115,17 @@ function startGPS(){
 function updateUserMarker(){
   let deg = lastPos ? bearing(lastPos, currentPos) : 0;
   const icon = L.divIcon({className:"", html:`<div class="user-arrow" style="transform:rotate(${deg}deg)"></div>`, iconSize:[28,32], iconAnchor:[14,18]});
-  if (!userMarker) userMarker = L.marker(currentPos,{icon}).addTo(map); else userMarker.setLatLng(currentPos).setIcon(icon);
-  map.setView(currentPos, Math.max(map.getZoom(), 18), {animate:false});
+  if (!userMarker) userMarker = L.marker(currentPos,{icon}).addTo(map);
+  else userMarker.setLatLng(currentPos).setIcon(icon);
+
+  // v12: chỉ zoom 1 lần khi lấy GPS đầu tiên.
+  // Các lần GPS cập nhật sau chỉ pan nhẹ, giữ nguyên mức zoom để nhìn tổng quan xung quanh.
+  if (!hasInitialGpsFix) {
+    map.setView(currentPos, FOLLOW_ZOOM, { animate: false });
+    hasInitialGpsFix = true;
+  } else {
+    map.panTo(currentPos, { animate: true, duration: 0.35 });
+  }
 }
 
 function projectPointToSegment(p,a,b){

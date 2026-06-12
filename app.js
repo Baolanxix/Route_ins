@@ -1,4 +1,5 @@
 const DEFAULT_FILE = 'Route.kmz';
+const kmzInput = document.getElementById('kmzInput');
 const infoEl = document.getElementById('info');
 const stepsEl = document.getElementById('steps');
 const bigArrowEl = document.getElementById('bigArrow');
@@ -328,6 +329,7 @@ function updateSteps(pos,target,offRoute,br){
 
 async function loadRoute(fileOrUrl){
   try{
+    guideBuiltFromGps = false;
     setStatus('Đang đọc file KMZ/KML...');
     routeSegments = await readFile(fileOrUrl);
     guidePath = currentUserPos ? optimizePath(currentUserPos) : mergeSegments(routeSegments);
@@ -359,6 +361,14 @@ function stopLocate(){
   if(watchId) navigator.geolocation.clearWatch(watchId);
   watchId = null;
   setStatus('Đã dừng theo dõi GPS.');
+}
+
+if (kmzInput) {
+  kmzInput.addEventListener('change', (e)=>{
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    loadRoute(file);
+  });
 }
 
 window.addEventListener('load', ()=>loadRoute(DEFAULT_FILE));

@@ -1,8 +1,7 @@
-# Route Navigator v9
+# Route Navigator v10
 
-Bản tối giản:
-- Không có bảng chỉ dẫn phía dưới.
-- Không có banner hướng dẫn/đang tải trên bản đồ.
-- Không có điểm đỏ điểm tới tiếp theo.
-- Không có nút chọn file KMZ/KML khác.
-- Tự tải Route.kmz và tự xin GPS.
+- Tự tải Route.kmz khi mở web.
+- Có nút chọn KMZ/KML để import route khác.
+- Không có khung chỉ dẫn, banner, điểm đỏ.
+- Điểm bắt đầu là điểm gần GPS nhất trên chính đoạn route.
+- Chỉ vẽ và dẫn trên các đoạn có trong file KMZ/KML.

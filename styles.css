@@ -5,3 +5,6 @@ html,body{height:100%;margin:0;background:#020617;font-family:Arial,Helvetica,sa
 .pathArrowIcon,.directionArrowIcon{background:transparent;border:none}
 .arrowShape{display:flex;align-items:center;justify-content:center;transform-origin:50% 50%;filter:drop-shadow(0 2px 4px #000)}
 .directionArrowIcon .arrowShape{filter:drop-shadow(0 3px 6px #000)}
+.fileInput{display:none}
+.fileButton{position:fixed;left:12px;bottom:22px;z-index:1000;background:rgba(15,23,42,.9);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:999px;padding:10px 14px;font-size:14px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.35);cursor:pointer;user-select:none}
+.fileButton:active{transform:scale(.97)}

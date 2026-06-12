@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Route KMZ Navigator</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIINfQGXZ7P66C31kxfwQpE/D0vH80QBCFvE=" crossorigin="" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Route KMZ Navigator</h1>
+      <p>Dẫn đường theo tuyến trong KMZ/KML, ưu tiên đi hết tuyến với ít lặp đoạn.</p>
+    </header>
+
+    <section class="panel">
+      <div class="row">
+        <button id="locateBtn">📍 Lấy vị trí của tôi</button>
+        <label class="fileBtn">📂 Chọn KMZ/KML khác
+          <input id="fileInput" type="file" accept=".kmz,.kml" />
+        </label>
+      </div>
+      <div id="status">Đang tải Route.kmz...</div>
+      <div id="info"></div>
+    </section>
+
+    <main id="map"></main>
+
+    <section class="panel instructions">
+      <h2>Hướng dẫn</h2>
+      <ol id="steps"></ol>
+    </section>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

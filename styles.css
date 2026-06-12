@@ -1,0 +1,22 @@
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; font-family: Arial, sans-serif; }
+#app { display: grid; grid-template-rows: auto auto 1fr auto; background: #111; color: #fff; }
+header { padding: 12px 16px; background: #181818; border-bottom: 1px solid #333; }
+h1 { margin: 0 0 4px; font-size: 20px; }
+p { margin: 0; color: #ccc; }
+.panel { padding: 10px 16px; background: #202020; border-bottom: 1px solid #333; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+button, .fileBtn { border: 0; padding: 10px 12px; border-radius: 8px; background: #0b72ff; color: white; cursor: pointer; font-weight: 700; }
+.fileBtn input { display: none; }
+#status { color: #ddd; margin-bottom: 4px; }
+#info { color: #a8e6a1; font-size: 14px; }
+#map { min-height: 420px; }
+.instructions { max-height: 190px; overflow: auto; border-top: 1px solid #333; border-bottom: 0; }
+.instructions h2 { margin: 0 0 8px; font-size: 16px; }
+.instructions ol { margin: 0; padding-left: 22px; }
+.instructions li { margin: 5px 0; color: #eee; }
+.leaflet-popup-content { color: #111; }
+@media (max-width: 700px) {
+  #app { grid-template-rows: auto auto 1fr auto; }
+  #map { min-height: 55vh; }
+}

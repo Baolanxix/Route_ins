@@ -6,3 +6,4 @@ body { font-family: Arial, sans-serif; overflow: hidden; }
 .user-arrow { width: 0; height: 0; border-left: 11px solid transparent; border-right: 11px solid transparent; border-bottom: 28px solid #1a73e8; filter: drop-shadow(0 1px 4px rgba(0,0,0,.55)); transform-origin: 50% 70%; }
 .nav-arrow { width: 0; height: 0; border-left: 8px solid transparent; border-right: 8px solid transparent; border-bottom: 21px solid #ffd400; filter: drop-shadow(0 1px 3px rgba(0,0,0,.65)); transform-origin: 50% 70%; }
 .leaflet-control-attribution { display:none; }
+.uturn-icon { width: 34px; height: 34px; border-radius: 50%; display:flex; align-items:center; justify-content:center; background:#ffd400; color:#111; font-weight:900; font-size:26px; box-shadow:0 2px 8px rgba(0,0,0,.55); }

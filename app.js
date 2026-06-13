@@ -1,13 +1,14 @@
-// Field Route Navigator v14
+// Field Route Navigator v15
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
 const VISITED_BUFFER_M = 8;      // GPS lệch <= 8m vẫn tính là đã đi
 const SEGMENT_MAX_M = 25;        // chia line dài thành đoạn nhỏ để tô xanh sớm
 const GUIDE_LOOKAHEAD_M = 300;   // chỉ dẫn trước 300m
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v14-state";
+const STORAGE_KEY = "field-route-v15-state";
 const FOLLOW_ZOOM = 16;
-const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
+const SNAP_TOL_M = 3; // tự nối/split các line giao nhau hoặc lệch rất nhỏ
+const ARROW_LOOKAHEAD_M = 120; // chỉ vẽ mũi tên ở đoạn đang đi gần nhất để tránh chồng mũi tên khi quay đầu
 let hasInitialGpsFix = false;
 
 let map = L.map("map", { zoomControl: false }).setView([10.8, 106.7], 17);
@@ -25,21 +26,16 @@ let edgeStatus = new Map(); // edgeKey -> unvisited/done/skipped
 
 const fileInput = document.getElementById("fileInput");
 fileInput.onchange = async e => { const f = e.target.files[0]; if (f) await loadFile(f); };
-document.getElementById("resetBtn").onclick = () => { localStorage.removeItem(STORAGE_KEY); edgeStatus.clear(); planCursor = 0; if (graph && currentPos) rebuildFromGps(); drawAll(); };
+document.getElementById("resetBtn").onclick = () => { localStorage.removeItem(STORAGE_KEY); edgeStatus.clear(); planCursor = 0; planned = []; if (graph && currentPos) rebuildFromGps(); drawAll(); };
 document.getElementById("skipBtn").onclick = () => skipCurrentEdge();
 document.getElementById("skip300Btn").onclick = () => skipAhead(300);
 document.getElementById("exportBtn").onclick = () => exportGPX();
 
 init();
 async function init(){
-  await loadDefaultKMZ();
+  // v15: Không tự fetch Route.kmz nữa. Người dùng tự import KMZ/KML bằng nút Chọn KMZ/KML.
+  // Nhờ vậy repo GitHub không cần chứa file Route.kmz và mỗi lần đi có thể dùng route khác.
   startGPS();
-}
-
-async function loadDefaultKMZ(){
-  const res = await fetch("Route.kmz?v=14");
-  const blob = await res.blob();
-  await loadFile(blob);
 }
 
 async function loadFile(file){
@@ -351,7 +347,7 @@ function eulerTrail(start, edgeList){
 function updateProgress(){
   if(!planned.length || !currentPos) return;
 
-  // v14: Không chờ đi hết cả line dài. Route đã được chia nhỏ 20-25m.
+  // v15: Không chờ đi hết cả line dài. Route đã được chia nhỏ 20-25m.
   // Nếu GPS nằm trong corridor VISITED_BUFFER_M quanh tuyến đã plan, các segment phía sau sẽ xanh sớm.
   let best = null;
   const maxCheck = Math.min(planned.length, planCursor + 80);
@@ -410,17 +406,49 @@ function drawAll(fit=false){
 function drawActiveLookahead(){
   if(!planned.length) return;
   let remain = GUIDE_LOOKAHEAD_M;
+  let arrowRemain = ARROW_LOOKAHEAD_M;
+  const arrowPhysical = [];
+  let lastStep = null;
+
   for(let i=planCursor; i<planned.length && remain>0; i++){
     const st = planned[i];
     if(!st || edgeStatus.get(st.key)!=="unvisited") continue;
     const a=graph.nodes.get(st.a).p, b=graph.nodes.get(st.b).p;
-    const len=dist(a,b);
+    const len=dist(a,b); if(len <= 0) continue;
     const use = Math.min(len, remain);
     const end = use >= len ? b : [a[0]+(b[0]-a[0])*(use/len), a[1]+(b[1]-a[1])*(use/len)];
+
+    // Tuyến cần đi vẫn tô vàng 300m phía trước để nhìn tổng quan.
     L.polyline([a,end],{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
-    drawArrowsOnSegment(a,end);
+
+    // Nếu route yêu cầu quay đầu ngay trên cùng một đoạn, chỉ hiện biểu tượng quay đầu ở nút quay,
+    // không vẽ 2 hàng mũi tên ngược chiều đè lên nhau.
+    if (lastStep && isReverseOf(lastStep, st)) {
+      drawUTurn(a);
+    } else if (arrowRemain > 0 && !isOppositeArrowAlreadyDrawn(a, end, arrowPhysical)) {
+      const arrowUse = Math.min(use, arrowRemain);
+      const arrowEnd = arrowUse >= len ? end : [a[0]+(b[0]-a[0])*(arrowUse/len), a[1]+(b[1]-a[1])*(arrowUse/len)];
+      drawArrowsOnSegment(a, arrowEnd);
+      arrowPhysical.push({a, b: arrowEnd, br: bearing(a, arrowEnd)});
+      arrowRemain -= arrowUse;
+    }
+
     remain -= use;
+    lastStep = st;
   }
+}
+function isReverseOf(a,b){ return a && b && a.a===b.b && a.b===b.a; }
+function isOppositeArrowAlreadyDrawn(a,b,items){
+  const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2], br=bearing(a,b);
+  return items.some(it => {
+    const m=[(it.a[0]+it.b[0])/2,(it.a[1]+it.b[1])/2];
+    const diff=Math.abs(((br-it.br+540)%360)-180);
+    return dist(mid,m) < 10 && diff < 35;
+  });
+}
+function drawUTurn(p){
+  const icon=L.divIcon({className:"", html:`<div class="uturn-icon">↺</div>`, iconSize:[34,34], iconAnchor:[17,17]});
+  L.marker(p,{icon,interactive:false}).addTo(layers.arrows);
 }
 function drawArrowsOnSegment(a,b){
   const len=dist(a,b); if(len < 3) return;
@@ -440,8 +468,9 @@ function restoreState(){
   try{ const obj=JSON.parse(localStorage.getItem(STORAGE_KEY)||"{}"); if(obj.status) obj.status.forEach(([k,v])=>edgeStatus.set(k,v)); }catch(e){}
 }
 function exportGPX(){
+  if(!graph) return alert("Bạn chưa chọn file KMZ/KML");
   const done=[...graph.edges.values()].filter(e=>edgeStatus.get(e.key)==="done");
   let trk=""; done.forEach(e=>e.geom.forEach(p=>trk+=`<trkpt lat="${p[0]}" lon="${p[1]}"></trkpt>\n`));
-  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v14"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
+  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v15"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([gpx],{type:"application/gpx+xml"})); a.download="completed-route.gpx"; a.click(); URL.revokeObjectURL(a.href);
 }

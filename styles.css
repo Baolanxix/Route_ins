@@ -10,3 +10,9 @@ body { font-family: Arial, sans-serif; overflow: hidden; }
 .remaining-box { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 1000; background: rgba(20,20,20,.86); color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 16px; font-weight: 700; box-shadow: 0 2px 12px rgba(0,0,0,.35); pointer-events: none; }
 
 .btn.on { background: rgba(0, 120, 255, .88); }
+
+.busy-box{display:none;position:fixed;left:50%;top:58px;transform:translateX(-50%);z-index:1200;background:rgba(0,0,0,.72);color:#fff;padding:8px 12px;border-radius:999px;font-size:13px;box-shadow:0 2px 10px rgba(0,0,0,.3)}
+body.planning .busy-box{display:block}
+body.planning .btn{opacity:.65;pointer-events:none}
+
+.btn.primary { background: rgba(255, 196, 0, .92); color: #111; font-weight: 700; }

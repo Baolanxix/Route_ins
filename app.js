@@ -1,11 +1,11 @@
-// Field Route Navigator v20-osm-smart-route
+// Field Route Navigator v22-continue-from-here
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
 const VISITED_BUFFER_M = 12;     // GPS lệch <= 12m vẫn tính là đã đi ngoài đường lớn
 const SEGMENT_MAX_M = 25;        // chia line dài thành đoạn nhỏ để tô xanh sớm
 const GUIDE_LOOKAHEAD_M = 300;   // chỉ dẫn trước 300m
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v20-osm-smart-route-state";
+const STORAGE_KEY = "field-route-v22-continue-state";
 const FOLLOW_ZOOM = 16;
 const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
 let hasInitialGpsFix = false;
@@ -37,12 +37,14 @@ let osrmCache = new Map();
 let osrmRequestId = 0;
 let lastOsrmKey = "";
 let edgeStatus = new Map(); // edgeKey -> unvisited/done/skipped
+let plannerBusy = false;
+let pendingRebuildTimer = null;
 
 const fileInput = document.getElementById("fileInput");
 fileInput.onchange = async e => { const f = e.target.files[0]; if (f) await loadFile(f); };
-document.getElementById("resetBtn").onclick = () => { localStorage.removeItem(STORAGE_KEY); edgeStatus.clear(); planCursor = 0; if (graph && currentPos) rebuildFromGps(); drawAll(); };
-document.getElementById("skipBtn").onclick = () => skipCurrentEdge();
-document.getElementById("skip300Btn").onclick = () => skipAhead(300);
+document.getElementById("resetBtn").onclick = () => resetRouteFast();
+const continueBtn = document.getElementById("continueBtn");
+if (continueBtn) continueBtn.onclick = () => continueFromHere();
 document.getElementById("exportBtn").onclick = () => exportGPX();
 const roadModeBtn = document.getElementById("roadModeBtn");
 if (roadModeBtn) roadModeBtn.onclick = () => { realRoadMode = !realRoadMode; updateRoadModeBtn(); drawAll(); };
@@ -320,11 +322,29 @@ function addGraphEdge(a,b){
 
 function rebuildFromGps(){
   if (!graph || !currentPos) return;
+  setPlannerBusy(true);
   const start = cloneRemainingGraphWithStart();
   planned = planOpenCPP(start);
   planCursor = 0;
   saveState();
   updateRemainingUI();
+  setPlannerBusy(false);
+}
+
+function scheduleRebuildFromGps(delay=120){
+  if (!graph || !currentPos) return;
+  if (pendingRebuildTimer) clearTimeout(pendingRebuildTimer);
+  setPlannerBusy(true);
+  pendingRebuildTimer = setTimeout(() => {
+    pendingRebuildTimer = null;
+    try { rebuildFromGps(); drawAll(); }
+    finally { setPlannerBusy(false); }
+  }, delay);
+}
+
+function setPlannerBusy(v){
+  plannerBusy = v;
+  document.body.classList.toggle("planning", v);
 }
 
 function dijkstra(src){
@@ -471,7 +491,7 @@ function updateProgress(){
     changed = true;
   }
 
-  if(planCursor>=planned.length) rebuildFromGps();
+  if(planCursor>=planned.length) scheduleRebuildFromGps(150);
   if (changed) saveState();
   updateRemainingUI();
 }
@@ -488,13 +508,69 @@ function movementCrossesSegment(p1, p2, a, b, tol){
   }
   return false;
 }
+
+function continueFromHere(){
+  // v22: nút "Tiếp tục đi" dùng khi bạn đã chạy sang đoạn sau nhưng app vẫn giữ các đoạn cũ.
+  // App sẽ lấy GPS hiện tại, tìm bước gần nhất trong kế hoạch, rồi đánh dấu các đoạn chưa đi trước đó là skipped.
+  // Nhờ vậy route tiếp tục chỉ dẫn từ nơi bạn đang đứng, không kéo bạn quay lại các đoạn cũ.
+  if (plannerBusy || !planned.length || !currentPos || !graph) return;
+
+  const MAX_CONTINUE_SNAP_M = Math.max(80, (currentAccuracy || 0) * 2.5);
+  let best = null;
+
+  for (let i = planCursor; i < planned.length; i++) {
+    const st = planned[i];
+    if (!st || edgeStatus.get(st.key) === "skipped") continue;
+    const e = graph.edges.get(st.key);
+    if (!e) continue;
+    const a = graph.nodes.get(st.a).p;
+    const b = graph.nodes.get(st.b).p;
+    const pr = projectPointToSegment(currentPos, a, b);
+
+    // Ưu tiên đoạn gần GPS nhất. Nếu gần bằng nhau, chọn đoạn ở xa hơn trong kế hoạch
+    // để bỏ qua được các đoạn cũ khi bạn đã đi vượt qua chúng.
+    if (!best || pr.d < best.d - 2 || (Math.abs(pr.d - best.d) <= 2 && i > best.i)) {
+      best = {i, d: pr.d, st};
+    }
+  }
+
+  if (!best || best.d > MAX_CONTINUE_SNAP_M) {
+    alert(`GPS hiện tại đang cách route khoảng ${best ? Math.round(best.d) : "?"}m. Hãy đứng gần route hơn rồi bấm Tiếp tục đi.`);
+    return;
+  }
+
+  let changed = false;
+  for (let i = planCursor; i < best.i; i++) {
+    const st = planned[i];
+    if (!st) continue;
+    const status = edgeStatus.get(st.key);
+    if (status === "unvisited") {
+      edgeStatus.set(st.key, "skipped");
+      changed = true;
+    }
+  }
+
+  planCursor = best.i;
+  while (planned[planCursor] && edgeStatus.get(planned[planCursor].key) === "skipped") planCursor++;
+  saveState();
+  drawAll();
+  updateRemainingUI();
+  if (changed) scheduleRebuildFromGps(250);
+}
+
 function skipCurrentEdge(){
+  if (plannerBusy) return;
   const step=planned[planCursor]; if(!step) return;
   edgeStatus.set(step.key,"skipped");
-  rebuildFromGps(); drawAll(); saveState(); updateRemainingUI();
+  while (planned[planCursor] && edgeStatus.get(planned[planCursor].key)!=="unvisited") planCursor++;
+  saveState();
+  drawAll();
+  updateRemainingUI();
+  // Không chạy tối ưu nặng ngay trong click để tránh đơ máy. Tính lại sau khi UI đã phản hồi.
+  scheduleRebuildFromGps(250);
 }
 function skipAhead(meters){
-  if(!planned.length) return;
+  if (plannerBusy || !planned.length) return;
   let sum = 0, i = planCursor, skipped = 0;
   while (i < planned.length && sum < meters) {
     const st = planned[i];
@@ -506,7 +582,22 @@ function skipAhead(meters){
     }
     i++;
   }
-  rebuildFromGps(); drawAll(); saveState(); updateRemainingUI();
+  while (planned[planCursor] && edgeStatus.get(planned[planCursor].key)!=="unvisited") planCursor++;
+  saveState();
+  drawAll();
+  updateRemainingUI();
+  scheduleRebuildFromGps(250);
+}
+function resetRouteFast(){
+  if (plannerBusy) return;
+  localStorage.removeItem(STORAGE_KEY);
+  edgeStatus.clear();
+  if (graph) for (const k of graph.edges.keys()) edgeStatus.set(k, "unvisited");
+  planCursor = 0;
+  planned = [];
+  drawAll();
+  updateRemainingUI();
+  scheduleRebuildFromGps(250);
 }
 
 function drawAll(fit=false){
@@ -708,6 +799,6 @@ function restoreState(){
 function exportGPX(){
   const done=[...graph.edges.values()].filter(e=>edgeStatus.get(e.key)==="done");
   let trk=""; done.forEach(e=>e.geom.forEach(p=>trk+=`<trkpt lat="${p[0]}" lon="${p[1]}"></trkpt>\n`));
-  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v20"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
+  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v21"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([gpx],{type:"application/gpx+xml"})); a.download="completed-route.gpx"; a.click(); URL.revokeObjectURL(a.href);
 }

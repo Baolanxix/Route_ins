@@ -3,18 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Field Route Navigator v20</title>
+  <title>Field Route Navigator v22</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div id="map"></div>
+  <div id="busyBox" class="busy-box">Đang tính lại tuyến...</div>
   <div id="remainingBox" class="remaining-box"><span id="remainingText">Còn lại: --</span></div>
   <div class="tools">
     <label class="btn">Chọn KMZ/KML<input id="fileInput" type="file" accept=".kmz,.kml" hidden></label>
     <button id="roadModeBtn" class="btn">OSM: Bật</button>
-    <button id="skipBtn" class="btn">Bỏ qua đoạn</button>
-    <button id="skip300Btn" class="btn">Bỏ qua 300m</button>
+    <button id="continueBtn" class="btn primary">Tiếp tục đi</button>
     <button id="resetBtn" class="btn">Đặt lại</button>
     <button id="exportBtn" class="btn">Xuất GPX</button>
   </div>

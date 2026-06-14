@@ -1,11 +1,11 @@
-// Field Route Navigator v15-import-right-arrows
+// Field Route Navigator v17-transit-arrows
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
 const VISITED_BUFFER_M = 8;      // GPS lệch <= 8m vẫn tính là đã đi
 const SEGMENT_MAX_M = 25;        // chia line dài thành đoạn nhỏ để tô xanh sớm
 const GUIDE_LOOKAHEAD_M = 300;   // chỉ dẫn trước 300m
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v15-import-right-arrows-state";
+const STORAGE_KEY = "field-route-v17-transit-arrows-state";
 const FOLLOW_ZOOM = 16;
 const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
 let hasInitialGpsFix = false;
@@ -17,6 +17,7 @@ let rawLines = [];
 let graph = null;
 let currentPos = null;
 let lastPos = null;
+let currentAccuracy = null;
 let userMarker = null;
 let planned = [];
 let planCursor = 0;
@@ -191,6 +192,7 @@ function startGPS(){
   navigator.geolocation.watchPosition(pos => {
     lastPos = currentPos;
     currentPos = [pos.coords.latitude, pos.coords.longitude];
+    currentAccuracy = pos.coords.accuracy || null;
     updateUserMarker();
     if (!planned.length && graph) rebuildFromGps();
     updateProgress();
@@ -348,27 +350,55 @@ function eulerTrail(start, edgeList){
 function updateProgress(){
   if(!planned.length || !currentPos) return;
 
-  // v14: Không chờ đi hết cả line dài. Route đã được chia nhỏ 20-25m.
-  // Nếu GPS nằm trong corridor VISITED_BUFFER_M quanh tuyến đã plan, các segment phía sau sẽ xanh sớm.
-  let best = null;
-  const maxCheck = Math.min(planned.length, planCursor + 80);
-  for (let i=planCursor; i<maxCheck; i++) {
-    const st = planned[i];
-    if (!st || edgeStatus.get(st.key) !== "unvisited") continue;
-    const a=graph.nodes.get(st.a).p, b=graph.nodes.get(st.b).p;
-    const pr=projectPointToSegment(currentPos,a,b);
-    if (pr.d <= VISITED_BUFFER_M && (!best || pr.d < best.d)) best = {i, pr};
-  }
-  if (!best) return;
+  // v17: vẫn chống tự xanh sai như v16, nhưng KHÔNG bỏ qua các segment đã xanh
+  // nếu chúng nằm trong kế hoạch đi tiếp. Segment xanh có thể là đoạn cần chạy lại
+  // để tới các đoạn chưa đi, vì vậy nó vẫn phải có mũi tên và vẫn cần GPS đi qua
+  // rồi mới chuyển planCursor sang bước kế tiếp.
+  if (currentAccuracy && currentAccuracy > 35) return; // GPS quá nhiễu thì không tự đánh dấu/nhảy bước
 
-  for (let i=planCursor; i<best.i; i++) {
-    if (planned[i] && edgeStatus.get(planned[i].key)==="unvisited") edgeStatus.set(planned[i].key,"done");
-  }
-  if (best.pr.t > 0.55 && planned[best.i]) edgeStatus.set(planned[best.i].key,"done");
+  let changed = false;
+  let guard = 0;
 
-  while(planned[planCursor] && edgeStatus.get(planned[planCursor].key)!=="unvisited") planCursor++;
+  while (planned[planCursor] && guard < 4) {
+    const st = planned[planCursor];
+    if (!st) { planCursor++; guard++; changed = true; continue; }
+
+    const status = edgeStatus.get(st.key) || "unvisited";
+    if (status === "skipped") {
+      planCursor++;
+      guard++;
+      changed = true;
+      continue;
+    }
+
+    const a = graph.nodes.get(st.a).p, b = graph.nodes.get(st.b).p;
+    const nowPr = projectPointToSegment(currentPos, a, b);
+
+    let shouldAdvance = false;
+    if (nowPr.d <= VISITED_BUFFER_M && nowPr.t >= 0.72) {
+      shouldAdvance = true;
+    }
+
+    // Nếu có GPS trước đó, chỉ tính đã đi qua bước hiện tại khi di chuyển đúng chiều.
+    if (!shouldAdvance && lastPos) {
+      const lastPr = projectPointToSegment(lastPos, a, b);
+      const movedForward = nowPr.t > lastPr.t + 0.18;
+      const bothNear = nowPr.d <= VISITED_BUFFER_M && lastPr.d <= VISITED_BUFFER_M;
+      if (bothNear && movedForward && nowPr.t >= 0.55) shouldAdvance = true;
+    }
+
+    if (!shouldAdvance) break;
+
+    // Chỉ segment chưa đi mới đổi xanh. Segment đã xanh chỉ là đoạn transit/chạy lại,
+    // đi qua xong thì chuyển sang bước kế tiếp, không làm mất mũi tên trước đó.
+    if (status === "unvisited") edgeStatus.set(st.key, "done");
+    planCursor++;
+    changed = true;
+    guard++;
+  }
+
   if(planCursor>=planned.length) rebuildFromGps();
-  saveState();
+  if (changed) saveState();
 }
 function skipCurrentEdge(){
   const step=planned[planCursor]; if(!step) return;
@@ -409,12 +439,18 @@ function drawActiveLookahead(){
   let remain = GUIDE_LOOKAHEAD_M;
   for(let i=planCursor; i<planned.length && remain>0; i++){
     const st = planned[i];
-    if(!st || edgeStatus.get(st.key)!=="unvisited") continue;
+    if(!st) continue;
+    const status = edgeStatus.get(st.key) || "unvisited";
+    if(status === "skipped") continue;
+
     const a=graph.nodes.get(st.a).p, b=graph.nodes.get(st.b).p;
     const len=dist(a,b);
     const use = Math.min(len, remain);
     const end = use >= len ? b : [a[0]+(b[0]-a[0])*(use/len), a[1]+(b[1]-a[1])*(use/len)];
-    L.polyline([a,end],{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
+
+    // v17: Nếu đường đi tới đoạn chưa đi phải chạy qua đoạn đã xanh,
+    // vẫn vẽ overlay/mũi tên màu vàng để người dùng biết phải đi tiếp theo hướng nào.
+    L.polyline([a,end],{color:"#ffd400",weight:9,opacity: status === "done" ? .78 : 1}).addTo(layers.active);
     drawArrowsOnSegment(a,end);
     remain -= use;
   }

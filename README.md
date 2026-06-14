@@ -1,14 +1,19 @@
-# Field Route Navigator v15
+# Field Route Navigator v17
 
-Bản chỉnh theo v14, nhưng:
+Bản này dựa trên v14/v16 và sửa thêm lỗi mũi tên khi phải đi qua lại đoạn đã chạy.
 
-- Không cần `Route.kmz` trong repo. Mở app rồi bấm **Chọn KMZ/KML** để import route.
-- Mũi tên chỉ đường đổi sang dạng nhỏ có đuôi `➜`.
-- Mũi tên được đặt lệch sang **bên phải của route theo chiều đi**, giúp các đoạn quay đầu/đi ngược chiều không bị chồng mũi tên lên nhau.
-- Giữ logic v14: chỉ dẫn trước 300m, GPS lệch trong 8m vẫn tính đã đi, chia route nhỏ để đi tới đâu xanh tới đó, có bỏ qua đoạn và bỏ qua 300m.
+## Thay đổi chính
+
+- Không cần `Route.kmz` trong repo. Người dùng tự bấm **Chọn KMZ/KML** để import route.
+- Chỉ dẫn trước 300m.
+- GPS lệch trong 8m vẫn tính là đã đi.
+- Chia route thành segment nhỏ để tô xanh sớm.
+- Mũi tên nhỏ dạng `➜`, đặt lệch bên phải route theo chiều đi để tránh trùng khi quay đầu.
+- **Mới v17:** Nếu hành trình tối ưu cần chạy qua đoạn đã xanh để tới đoạn chưa đi, đoạn đó vẫn hiện mũi tên vàng chỉ hướng đi.
+- **Mới v17:** Không tự bỏ qua segment đã xanh trong kế hoạch; phải đi qua nó theo GPS rồi mới chuyển bước tiếp theo.
 
 Mở sau khi deploy:
 
 ```text
-https://<user>.github.io/Route_ins/?v=15
+https://baolanxix.github.io/Route_ins/?v=17
 ```

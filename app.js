@@ -1,11 +1,11 @@
-// Field Route Navigator v17-transit-arrows
+// Field Route Navigator v18-progress-fix
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
-const VISITED_BUFFER_M = 8;      // GPS lệch <= 8m vẫn tính là đã đi
+const VISITED_BUFFER_M = 12;     // GPS lệch <= 12m vẫn tính là đã đi ngoài đường lớn
 const SEGMENT_MAX_M = 25;        // chia line dài thành đoạn nhỏ để tô xanh sớm
 const GUIDE_LOOKAHEAD_M = 300;   // chỉ dẫn trước 300m
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v17-transit-arrows-state";
+const STORAGE_KEY = "field-route-v18-progress-fix-state";
 const FOLLOW_ZOOM = 16;
 const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
 let hasInitialGpsFix = false;
@@ -350,55 +350,87 @@ function eulerTrail(start, edgeList){
 function updateProgress(){
   if(!planned.length || !currentPos) return;
 
-  // v17: vẫn chống tự xanh sai như v16, nhưng KHÔNG bỏ qua các segment đã xanh
-  // nếu chúng nằm trong kế hoạch đi tiếp. Segment xanh có thể là đoạn cần chạy lại
-  // để tới các đoạn chưa đi, vì vậy nó vẫn phải có mũi tên và vẫn cần GPS đi qua
-  // rồi mới chuyển planCursor sang bước kế tiếp.
-  if (currentAccuracy && currentAccuracy > 35) return; // GPS quá nhiễu thì không tự đánh dấu/nhảy bước
+  // v18: sửa lỗi ngoài đường không tô xanh.
+  // v17 quá bảo thủ: chỉ chờ GPS đi gần cuối đúng planCursor nên khi GPS nhảy, cập nhật thưa,
+  // hoặc xe chạy nhanh qua segment 25m thì segment không được chuyển xanh.
+  // v18 vẫn không quét xa toàn tuyến; chỉ xét current + vài segment kế tiếp để tránh tự xanh sai.
+  if (currentAccuracy && currentAccuracy > 60) return; // GPS quá nhiễu thì không tự đánh dấu
 
   let changed = false;
-  let guard = 0;
 
-  while (planned[planCursor] && guard < 4) {
-    const st = planned[planCursor];
-    if (!st) { planCursor++; guard++; changed = true; continue; }
-
-    const status = edgeStatus.get(st.key) || "unvisited";
-    if (status === "skipped") {
-      planCursor++;
-      guard++;
-      changed = true;
-      continue;
-    }
-
-    const a = graph.nodes.get(st.a).p, b = graph.nodes.get(st.b).p;
-    const nowPr = projectPointToSegment(currentPos, a, b);
-
-    let shouldAdvance = false;
-    if (nowPr.d <= VISITED_BUFFER_M && nowPr.t >= 0.72) {
-      shouldAdvance = true;
-    }
-
-    // Nếu có GPS trước đó, chỉ tính đã đi qua bước hiện tại khi di chuyển đúng chiều.
-    if (!shouldAdvance && lastPos) {
-      const lastPr = projectPointToSegment(lastPos, a, b);
-      const movedForward = nowPr.t > lastPr.t + 0.18;
-      const bothNear = nowPr.d <= VISITED_BUFFER_M && lastPr.d <= VISITED_BUFFER_M;
-      if (bothNear && movedForward && nowPr.t >= 0.55) shouldAdvance = true;
-    }
-
-    if (!shouldAdvance) break;
-
-    // Chỉ segment chưa đi mới đổi xanh. Segment đã xanh chỉ là đoạn transit/chạy lại,
-    // đi qua xong thì chuyển sang bước kế tiếp, không làm mất mũi tên trước đó.
-    if (status === "unvisited") edgeStatus.set(st.key, "done");
+  // Bỏ qua các bước skipped trong kế hoạch.
+  while (planned[planCursor] && edgeStatus.get(planned[planCursor].key)==="skipped") {
     planCursor++;
     changed = true;
-    guard++;
+  }
+
+  // Tìm segment gần GPS nhất trong cửa sổ nhỏ phía trước.
+  const MAX_AHEAD_STEPS = 6;
+  let best = null;
+  for (let i = planCursor; i < Math.min(planned.length, planCursor + MAX_AHEAD_STEPS); i++) {
+    const st = planned[i];
+    if (!st || edgeStatus.get(st.key)==="skipped") continue;
+    const a = graph.nodes.get(st.a).p, b = graph.nodes.get(st.b).p;
+    const pr = projectPointToSegment(currentPos, a, b);
+    if (pr.d <= VISITED_BUFFER_M && (!best || pr.d < best.pr.d)) best = {i, st, a, b, pr};
+  }
+  if (!best) { if (changed) saveState(); return; }
+
+  // Nếu GPS đang ở segment phía sau vài bước thì đánh dấu các segment trước đó là đã đi.
+  // Chỉ làm trong cửa sổ nhỏ nên không tự tô xanh hàng loạt đoạn xa.
+  if (best.i > planCursor) {
+    for (let i = planCursor; i < best.i; i++) {
+      const st = planned[i];
+      if (st && edgeStatus.get(st.key)==="unvisited") edgeStatus.set(st.key,"done");
+    }
+    planCursor = best.i;
+    changed = true;
+  }
+
+  const st = planned[planCursor];
+  if (!st || edgeStatus.get(st.key)==="skipped") { if (changed) saveState(); return; }
+
+  const a = graph.nodes.get(st.a).p, b = graph.nodes.get(st.b).p;
+  const nowPr = projectPointToSegment(currentPos, a, b);
+  let shouldAdvance = false;
+
+  // 1) GPS đã đi tới gần cuối segment hiện tại.
+  if (nowPr.d <= VISITED_BUFFER_M && nowPr.t >= 0.60) shouldAdvance = true;
+
+  // 2) Nếu có GPS trước đó, xe di chuyển đúng chiều qua segment.
+  if (!shouldAdvance && lastPos) {
+    const lastPr = projectPointToSegment(lastPos, a, b);
+    const movedForward = nowPr.t > lastPr.t + 0.12;
+    const bothNear = nowPr.d <= VISITED_BUFFER_M && lastPr.d <= VISITED_BUFFER_M;
+    if (bothNear && movedForward && nowPr.t >= 0.45) shouldAdvance = true;
+
+    // 3) Trường hợp chạy nhanh qua segment ngắn giữa 2 lần cập nhật GPS:
+    // đoạn chuyển động GPS cắt/đi rất gần segment đang dẫn thì coi là đã đi qua.
+    const travelNear = movementCrossesSegment(lastPos, currentPos, a, b, VISITED_BUFFER_M);
+    if (travelNear && nowPr.t >= 0.35) shouldAdvance = true;
+  }
+
+  if (shouldAdvance) {
+    if (edgeStatus.get(st.key)==="unvisited") edgeStatus.set(st.key,"done");
+    planCursor++;
+    changed = true;
   }
 
   if(planCursor>=planned.length) rebuildFromGps();
   if (changed) saveState();
+}
+
+function movementCrossesSegment(p1, p2, a, b, tol){
+  // Kiểm tra đường di chuyển giữa 2 GPS update có đi gần segment route không.
+  // Dùng nhiều điểm mẫu để tránh bỏ sót khi xe chạy nhanh qua segment ngắn.
+  const samples = 6;
+  for (let i=0; i<=samples; i++) {
+    const t = i / samples;
+    const p = [p1[0] + (p2[0]-p1[0])*t, p1[1] + (p2[1]-p1[1])*t];
+    const pr = projectPointToSegment(p, a, b);
+    if (pr.d <= tol && pr.t >= 0.05 && pr.t <= 0.98) return true;
+  }
+  return false;
 }
 function skipCurrentEdge(){
   const step=planned[planCursor]; if(!step) return;
@@ -448,9 +480,11 @@ function drawActiveLookahead(){
     const use = Math.min(len, remain);
     const end = use >= len ? b : [a[0]+(b[0]-a[0])*(use/len), a[1]+(b[1]-a[1])*(use/len)];
 
-    // v17: Nếu đường đi tới đoạn chưa đi phải chạy qua đoạn đã xanh,
-    // vẫn vẽ overlay/mũi tên màu vàng để người dùng biết phải đi tiếp theo hướng nào.
-    L.polyline([a,end],{color:"#ffd400",weight:9,opacity: status === "done" ? .78 : 1}).addTo(layers.active);
+    // v18: Nếu đây là đoạn đã đi rồi nhưng phải chạy lại để tới đoạn chưa đi,
+    // chỉ hiện mũi tên, KHÔNG tô vàng đường nữa để tránh nhầm với đoạn chưa kiểm tra.
+    if (status !== "done") {
+      L.polyline([a,end],{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
+    }
     drawArrowsOnSegment(a,end);
     remain -= use;
   }

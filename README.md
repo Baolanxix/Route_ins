@@ -1,11 +1,14 @@
 # Field Route Navigator v15
 
-Ứng dụng web tĩnh dùng Leaflet để import KMZ/KML và dẫn theo tuyến.
+Bản chỉnh theo v14, nhưng:
 
-## v15
 - Không cần `Route.kmz` trong repo. Mở app rồi bấm **Chọn KMZ/KML** để import route.
-- Chỉ vẽ mũi tên ở đoạn đang đi gần nhất để tránh chồng mũi tên khi quay đầu.
-- Nếu phát hiện quay đầu trên cùng segment, hiện ký hiệu `↺` thay vì vẽ 2 mũi tên ngược chiều đè nhau.
-- Vẫn giữ: chỉ dẫn trước 300m, buffer GPS 8m, chia segment nhỏ, bỏ qua đoạn / bỏ qua 300m, xuất GPX.
+- Mũi tên chỉ đường đổi sang dạng nhỏ có đuôi `➜`.
+- Mũi tên được đặt lệch sang **bên phải của route theo chiều đi**, giúp các đoạn quay đầu/đi ngược chiều không bị chồng mũi tên lên nhau.
+- Giữ logic v14: chỉ dẫn trước 300m, GPS lệch trong 8m vẫn tính đã đi, chia route nhỏ để đi tới đâu xanh tới đó, có bỏ qua đoạn và bỏ qua 300m.
 
-Deploy lên GitHub Pages/Vercel như web tĩnh.
+Mở sau khi deploy:
+
+```text
+https://<user>.github.io/Route_ins/?v=15
+```

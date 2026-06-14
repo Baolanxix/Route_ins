@@ -1,11 +1,11 @@
-// Field Route Navigator v19-distance-smooth-gps
+// Field Route Navigator v20-osm-smart-route
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
 const VISITED_BUFFER_M = 12;     // GPS lệch <= 12m vẫn tính là đã đi ngoài đường lớn
 const SEGMENT_MAX_M = 25;        // chia line dài thành đoạn nhỏ để tô xanh sớm
 const GUIDE_LOOKAHEAD_M = 300;   // chỉ dẫn trước 300m
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v19-distance-smooth-gps-state";
+const STORAGE_KEY = "field-route-v20-osm-smart-route-state";
 const FOLLOW_ZOOM = 16;
 const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
 let hasInitialGpsFix = false;
@@ -27,7 +27,15 @@ let markerAnimTo = null;
 let displayedBearing = 0;
 let planned = [];
 let planCursor = 0;
-let layers = { base: L.layerGroup().addTo(map), done: L.layerGroup().addTo(map), active: L.layerGroup().addTo(map), arrows: L.layerGroup().addTo(map), skipped: L.layerGroup().addTo(map) };
+let layers = { base: L.layerGroup().addTo(map), done: L.layerGroup().addTo(map), active: L.layerGroup().addTo(map), arrows: L.layerGroup().addTo(map), skipped: L.layerGroup().addTo(map), road: L.layerGroup().addTo(map) };
+
+// v20: chế độ thông minh dùng OSRM/OpenStreetMap để vẽ đường đi thực tế.
+// Khi bật, mũi tên/đường dẫn sẽ đi theo đường thật và tuân thủ one-way nếu dữ liệu OSM có.
+// Nếu OSRM lỗi hoặc không có mạng, app tự fallback về chỉ dẫn theo KMZ như v19.
+let realRoadMode = true;
+let osrmCache = new Map();
+let osrmRequestId = 0;
+let lastOsrmKey = "";
 let edgeStatus = new Map(); // edgeKey -> unvisited/done/skipped
 
 const fileInput = document.getElementById("fileInput");
@@ -36,7 +44,10 @@ document.getElementById("resetBtn").onclick = () => { localStorage.removeItem(ST
 document.getElementById("skipBtn").onclick = () => skipCurrentEdge();
 document.getElementById("skip300Btn").onclick = () => skipAhead(300);
 document.getElementById("exportBtn").onclick = () => exportGPX();
+const roadModeBtn = document.getElementById("roadModeBtn");
+if (roadModeBtn) roadModeBtn.onclick = () => { realRoadMode = !realRoadMode; updateRoadModeBtn(); drawAll(); };
 const remainingText = document.getElementById("remainingText");
+updateRoadModeBtn();
 
 init();
 async function init(){
@@ -514,7 +525,29 @@ function drawAll(fit=false){
 }
 function drawActiveLookahead(){
   if(!planned.length) return;
-  let remain = GUIDE_LOOKAHEAD_M;
+  const preview = getLookaheadPoints(GUIDE_LOOKAHEAD_M);
+  if (!preview || preview.points.length < 2) return;
+
+  // v20 smart mode: vẽ đường thật bằng OSRM để tránh đi ngược chiều đường 1 chiều.
+  // KMZ vẫn là danh sách đoạn cần kiểm tra; OSRM chỉ dùng để tìm đường chạy thực tế giữa các điểm kế hoạch.
+  if (realRoadMode) drawRealRoadLookahead(preview.points);
+  else drawKmzLookahead(preview.steps);
+}
+
+function drawKmzLookahead(steps){
+  for (const item of steps) {
+    const {a,b,status} = item;
+    // Nếu đây là đoạn đã đi rồi nhưng phải chạy lại để tới đoạn chưa đi,
+    // chỉ hiện mũi tên, KHÔNG tô vàng đường nữa để tránh nhầm với đoạn chưa kiểm tra.
+    if (status !== "done") L.polyline([a,b],{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
+    drawArrowsOnSegment(a,b);
+  }
+}
+
+function getLookaheadPoints(maxMeters){
+  let remain = maxMeters;
+  const points = [];
+  const steps = [];
   for(let i=planCursor; i<planned.length && remain>0; i++){
     const st = planned[i];
     if(!st) continue;
@@ -525,15 +558,74 @@ function drawActiveLookahead(){
     const len=dist(a,b);
     const use = Math.min(len, remain);
     const end = use >= len ? b : [a[0]+(b[0]-a[0])*(use/len), a[1]+(b[1]-a[1])*(use/len)];
-
-    // v18: Nếu đây là đoạn đã đi rồi nhưng phải chạy lại để tới đoạn chưa đi,
-    // chỉ hiện mũi tên, KHÔNG tô vàng đường nữa để tránh nhầm với đoạn chưa kiểm tra.
-    if (status !== "done") {
-      L.polyline([a,end],{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
-    }
-    drawArrowsOnSegment(a,end);
+    if (!points.length) points.push(a);
+    points.push(end);
+    steps.push({a,b:end,status});
     remain -= use;
   }
+  return {points, steps};
+}
+
+function drawRealRoadLookahead(points){
+  const simplified = simplifyWaypointsForOsrm(points, 18);
+  if (simplified.length < 2) { drawKmzLookahead(getLookaheadPoints(GUIDE_LOOKAHEAD_M).steps); return; }
+  const key = simplified.map(p => `${p[1].toFixed(5)},${p[0].toFixed(5)}`).join(";");
+
+  if (osrmCache.has(key)) {
+    drawOsrmGeometry(osrmCache.get(key));
+    return;
+  }
+
+  // Vẽ tạm theo KMZ ngay để không bị trống khi đang chờ OSRM.
+  drawKmzLookahead(getLookaheadPoints(GUIDE_LOOKAHEAD_M).steps);
+  if (key === lastOsrmKey) return;
+  lastOsrmKey = key;
+  const reqId = ++osrmRequestId;
+  const url = `https://router.project-osrm.org/route/v1/driving/${key}?overview=full&geometries=geojson&continue_straight=false`;
+  fetch(url)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error("OSRM HTTP " + r.status)))
+    .then(data => {
+      if (reqId !== osrmRequestId) return;
+      const route = data && data.routes && data.routes[0];
+      if (!route || !route.geometry || !route.geometry.coordinates) throw new Error("Không có route OSRM");
+      const geom = route.geometry.coordinates.map(c => [c[1], c[0]]);
+      osrmCache.set(key, {geom, distance: route.distance || 0});
+      layers.active.clearLayers();
+      layers.arrows.clearLayers();
+      drawOsrmGeometry(osrmCache.get(key));
+    })
+    .catch(() => {
+      // Không có mạng / OSRM lỗi / khu vực chưa có OSM: giữ fallback theo KMZ.
+    });
+}
+
+function drawOsrmGeometry(route){
+  const geom = route.geom || [];
+  if (geom.length < 2) return;
+  L.polyline(geom,{color:"#ffd400",weight:9,opacity:1}).addTo(layers.active);
+  for (let i=0; i<geom.length-1; i++) {
+    if (dist(geom[i], geom[i+1]) > 5) drawArrowsOnSegment(geom[i], geom[i+1]);
+  }
+}
+
+function simplifyWaypointsForOsrm(points, maxPoints){
+  const clean=[];
+  for (const p of points) {
+    const last=clean[clean.length-1];
+    if (!last || dist(last,p)>6) clean.push(p);
+  }
+  if (clean.length <= maxPoints) return clean;
+  const out=[];
+  for (let i=0; i<maxPoints; i++) {
+    out.push(clean[Math.round(i*(clean.length-1)/(maxPoints-1))]);
+  }
+  return out;
+}
+
+function updateRoadModeBtn(){
+  if (!roadModeBtn) return;
+  roadModeBtn.textContent = realRoadMode ? "OSM: Bật" : "OSM: Tắt";
+  roadModeBtn.classList.toggle("on", realRoadMode);
 }
 function drawArrowsOnSegment(a,b){
   const len=dist(a,b); if(len < 3) return;
@@ -616,6 +708,6 @@ function restoreState(){
 function exportGPX(){
   const done=[...graph.edges.values()].filter(e=>edgeStatus.get(e.key)==="done");
   let trk=""; done.forEach(e=>e.geom.forEach(p=>trk+=`<trkpt lat="${p[0]}" lon="${p[1]}"></trkpt>\n`));
-  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v14"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
+  const gpx=`<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="Field Route Navigator v20"><trk><name>Completed route</name><trkseg>${trk}</trkseg></trk></gpx>`;
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([gpx],{type:"application/gpx+xml"})); a.download="completed-route.gpx"; a.click(); URL.revokeObjectURL(a.href);
 }

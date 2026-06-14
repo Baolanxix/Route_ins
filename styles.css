@@ -8,3 +8,5 @@ body { font-family: Arial, sans-serif; overflow: hidden; }
 .leaflet-control-attribution { display:none; }
 
 .remaining-box { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 1000; background: rgba(20,20,20,.86); color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 16px; font-weight: 700; box-shadow: 0 2px 12px rgba(0,0,0,.35); pointer-events: none; }
+
+.btn.on { background: rgba(0, 120, 255, .88); }

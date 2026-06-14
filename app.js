@@ -1,11 +1,11 @@
-// Field Route Navigator v18-progress-fix
+// Field Route Navigator v19-distance-smooth-gps
 // Chinese Postman style planner: đi qua tất cả đoạn KMZ, ít lặp nhất có thể, chỉ đi trên đoạn có trong KMZ.
 
 const VISITED_BUFFER_M = 12;     // GPS lệch <= 12m vẫn tính là đã đi ngoài đường lớn
 const SEGMENT_MAX_M = 25;        // chia line dài thành đoạn nhỏ để tô xanh sớm
 const GUIDE_LOOKAHEAD_M = 300;   // chỉ dẫn trước 300m
 const NODE_PREC = 7;
-const STORAGE_KEY = "field-route-v18-progress-fix-state";
+const STORAGE_KEY = "field-route-v19-distance-smooth-gps-state";
 const FOLLOW_ZOOM = 16;
 const SNAP_TOL_M = 3; // v13: tự nối/split các line giao nhau hoặc lệch rất nhỏ
 let hasInitialGpsFix = false;
@@ -19,6 +19,12 @@ let currentPos = null;
 let lastPos = null;
 let currentAccuracy = null;
 let userMarker = null;
+let displayedPos = null;
+let markerAnim = null;
+let markerAnimStart = 0;
+let markerAnimFrom = null;
+let markerAnimTo = null;
+let displayedBearing = 0;
 let planned = [];
 let planCursor = 0;
 let layers = { base: L.layerGroup().addTo(map), done: L.layerGroup().addTo(map), active: L.layerGroup().addTo(map), arrows: L.layerGroup().addTo(map), skipped: L.layerGroup().addTo(map) };
@@ -30,6 +36,7 @@ document.getElementById("resetBtn").onclick = () => { localStorage.removeItem(ST
 document.getElementById("skipBtn").onclick = () => skipCurrentEdge();
 document.getElementById("skip300Btn").onclick = () => skipAhead(300);
 document.getElementById("exportBtn").onclick = () => exportGPX();
+const remainingText = document.getElementById("remainingText");
 
 init();
 async function init(){
@@ -57,6 +64,7 @@ async function loadFile(file){
   restoreState();
   if (currentPos) rebuildFromGps();
   drawAll(true);
+  updateRemainingUI();
 }
 
 function parseKmlToLines(kmlText){
@@ -201,19 +209,54 @@ function startGPS(){
 }
 
 function updateUserMarker(){
-  let deg = lastPos ? bearing(lastPos, currentPos) : 0;
-  const icon = L.divIcon({className:"", html:`<div class="user-arrow" style="transform:rotate(${deg}deg)"></div>`, iconSize:[28,32], iconAnchor:[14,18]});
-  if (!userMarker) userMarker = L.marker(currentPos,{icon}).addTo(map);
-  else userMarker.setLatLng(currentPos).setIcon(icon);
+  const targetBearing = lastPos ? bearing(lastPos, currentPos) : displayedBearing;
+  const start = displayedPos || currentPos;
+  const end = currentPos;
 
-  // v12: chỉ zoom 1 lần khi lấy GPS đầu tiên.
-  // Các lần GPS cập nhật sau chỉ pan nhẹ, giữ nguyên mức zoom để nhìn tổng quan xung quanh.
+  // v19: mũi tên GPS trượt mượt tới vị trí mới thay vì nhảy từng lần GPS update.
+  markerAnimFrom = start;
+  markerAnimTo = end;
+  markerAnimStart = performance.now();
+  displayedBearing = smoothBearing(displayedBearing, targetBearing, 0.35);
+
+  if (!userMarker) {
+    displayedPos = currentPos;
+    userMarker = L.marker(currentPos,{icon:userIcon(displayedBearing)}).addTo(map);
+  }
+  if (markerAnim) cancelAnimationFrame(markerAnim);
+  animateUserMarker();
+
+  // Chỉ zoom một lần khi lấy GPS đầu tiên; các lần sau pan nhẹ, giữ nguyên mức zoom.
   if (!hasInitialGpsFix) {
     map.setView(currentPos, FOLLOW_ZOOM, { animate: false });
     hasInitialGpsFix = true;
   } else {
     map.panTo(currentPos, { animate: true, duration: 0.35 });
   }
+}
+
+function userIcon(deg){
+  return L.divIcon({className:"", html:`<div class="user-arrow" style="transform:rotate(${deg}deg)"></div>`, iconSize:[28,32], iconAnchor:[14,18]});
+}
+
+function animateUserMarker(){
+  if (!userMarker || !markerAnimFrom || !markerAnimTo) return;
+  const duration = 850;
+  const now = performance.now();
+  const t = Math.min(1, (now - markerAnimStart) / duration);
+  const eased = t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t+2,2)/2;
+  displayedPos = [
+    markerAnimFrom[0] + (markerAnimTo[0]-markerAnimFrom[0]) * eased,
+    markerAnimFrom[1] + (markerAnimTo[1]-markerAnimFrom[1]) * eased
+  ];
+  userMarker.setLatLng(displayedPos);
+  userMarker.setIcon(userIcon(displayedBearing));
+  if (t < 1) markerAnim = requestAnimationFrame(animateUserMarker);
+}
+
+function smoothBearing(from, to, factor){
+  let diff = ((to - from + 540) % 360) - 180;
+  return (from + diff * factor + 360) % 360;
 }
 
 function projectPointToSegment(p,a,b){
@@ -270,6 +313,7 @@ function rebuildFromGps(){
   planned = planOpenCPP(start);
   planCursor = 0;
   saveState();
+  updateRemainingUI();
 }
 
 function dijkstra(src){
@@ -418,6 +462,7 @@ function updateProgress(){
 
   if(planCursor>=planned.length) rebuildFromGps();
   if (changed) saveState();
+  updateRemainingUI();
 }
 
 function movementCrossesSegment(p1, p2, a, b, tol){
@@ -435,7 +480,7 @@ function movementCrossesSegment(p1, p2, a, b, tol){
 function skipCurrentEdge(){
   const step=planned[planCursor]; if(!step) return;
   edgeStatus.set(step.key,"skipped");
-  rebuildFromGps(); drawAll(); saveState();
+  rebuildFromGps(); drawAll(); saveState(); updateRemainingUI();
 }
 function skipAhead(meters){
   if(!planned.length) return;
@@ -450,12 +495,12 @@ function skipAhead(meters){
     }
     i++;
   }
-  rebuildFromGps(); drawAll(); saveState();
+  rebuildFromGps(); drawAll(); saveState(); updateRemainingUI();
 }
 
 function drawAll(fit=false){
   Object.values(layers).forEach(g=>g.clearLayers());
-  if(!graph) return;
+  if(!graph) { updateRemainingUI(); return; }
   const bounds=[];
   for(const e of graph.edges.values()){
     const st=edgeStatus.get(e.key)||"unvisited"; const geom=e.geom; bounds.push(...geom);
@@ -464,6 +509,7 @@ function drawAll(fit=false){
     else L.polyline(geom,{color:"#b9c0c9",weight:5,opacity:.55}).addTo(layers.base);
   }
   drawActiveLookahead();
+  updateRemainingUI();
   if(fit && bounds.length) map.fitBounds(bounds,{padding:[30,30]});
 }
 function drawActiveLookahead(){
@@ -524,6 +570,43 @@ function destinationPoint(p, brDeg, meters){
   const λ2=λ1+Math.atan2(y,x);
   return [φ2*180/Math.PI, ((λ2*180/Math.PI+540)%360)-180];
 }
+function remainingMeters(){
+  if (!planned.length || !graph) return 0;
+  let total = 0;
+  for (let i = planCursor; i < planned.length; i++) {
+    const st = planned[i];
+    if (!st || edgeStatus.get(st.key)==="skipped") continue;
+    const e = graph.edges.get(st.key);
+    if (!e) continue;
+    let len = e.len;
+    // Segment hiện tại: trừ phần đã đi qua theo vị trí GPS nếu đang nằm gần đúng segment.
+    if (i === planCursor && currentPos) {
+      const a = graph.nodes.get(st.a).p, b = graph.nodes.get(st.b).p;
+      const pr = projectPointToSegment(currentPos, a, b);
+      if (pr.d <= Math.max(VISITED_BUFFER_M, 15)) {
+        len = Math.max(0, len * (1 - pr.t));
+      }
+    }
+    total += len;
+  }
+  return total;
+}
+
+function updateRemainingUI(){
+  if (!remainingText) return;
+  if (!graph || !planned.length) {
+    remainingText.textContent = "Còn lại: --";
+    return;
+  }
+  const m = remainingMeters();
+  remainingText.textContent = `Còn lại: ${formatDistance(m)}`;
+}
+
+function formatDistance(m){
+  if (m >= 1000) return `${(m/1000).toFixed(m >= 10000 ? 1 : 2)} km`;
+  return `${Math.round(m)} m`;
+}
+
 function saveState(){
   const obj={status:[...edgeStatus.entries()]}; localStorage.setItem(STORAGE_KEY, JSON.stringify(obj));
 }

@@ -1,15 +1,13 @@
-# Field Route Navigator v18
+# Field Route Navigator v19
 
-Bản v18 sửa theo phản hồi ngoài thực địa:
+Bản v19 dựa trên v18, thêm:
 
-- Route không còn tự load `Route.kmz`; người dùng tự import KMZ/KML.
-- Mũi tên nhỏ có đuôi `➜`, lệch bên phải route theo chiều đi.
-- Sửa lỗi v17 quá bảo thủ làm đoạn đã chạy qua không tô xanh:
-  - tăng buffer GPS lên 12m cho đường lớn,
-  - cho phép xác nhận trong vài segment kế tiếp gần GPS,
-  - nhận diện trường hợp xe chạy nhanh qua segment ngắn giữa 2 lần cập nhật GPS.
-- Đoạn đã đi rồi nhưng cần chạy lại để tới đoạn chưa đi: chỉ hiện mũi tên, không tô vàng đường nữa.
+- Hiển thị tổng số mét/km còn lại cần chạy theo kế hoạch hiện tại, tính cả các đoạn phải đi lặp lại để tới các đoạn chưa đi.
+- Mũi tên GPS trượt mượt giữa các lần cập nhật vị trí, giảm cảm giác bị nhảy như trước.
+- Giữ import KMZ/KML thủ công, không cần Route.kmz trong repo.
+- Giữ mũi tên chỉ đường lệch phải dạng ➜.
+- Giữ logic v18: đoạn đã đi mà phải chạy lại chỉ hiện mũi tên, không tô vàng lại.
 
-Mở sau khi deploy:
+Deploy xong mở:
 
-https://baolanxix.github.io/Route_ins/?v=18
+https://baolanxix.github.io/Route_ins/?v=19
